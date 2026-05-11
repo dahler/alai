@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --dark-bg: #1a1a2e;
+  --dark-sidebar: #16213e;
+  --dark-chat: #0f3460;
+  --dark-input: #1a1a2e;
+  --dark-hover: #e94560;
+  --dark-text: #eaeaea;
+  --dark-muted: #a0a0a0;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background-color: var(--dark-bg);
+  color: var(--dark-text);
+  line-height: 1.6;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--dark-sidebar);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dark-muted);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dark-hover);
+}
+
+/* Code styling */
+code {
+  font-family: 'Fira Code', 'Monaco', 'Consolas', 'Courier New', monospace;
+}
+
+/* Prose overrides for dark theme */
+.prose {
+  color: var(--dark-text);
+}
+
+.prose strong {
+  color: var(--dark-text);
+}
+
+.prose code {
+  color: #f472b6;
+}
+
+.prose pre {
+  background-color: #0d1117;
+  border-radius: 0.5rem;
+}
+
+.prose blockquote {
+  border-left-color: var(--dark-hover);
+  color: var(--dark-muted);
+}
+
+.prose a {
+  color: var(--dark-hover);
+}
+
+.prose a:hover {
+  text-decoration: underline;
+}
+
+.prose hr {
+  border-color: var(--dark-muted);
+}
+
+.prose thead {
+  border-bottom-color: var(--dark-muted);
+}
+
+.prose tbody tr {
+  border-bottom-color: var(--dark-chat);
+}
+
+.prose th {
+  color: var(--dark-text);
+}
+
+/* Remove default list styling when using custom components */
+.prose ul, .prose ol {
+  list-style-position: inside;
+}
+
+/* Smooth animations */
+.transition-all {
+  transition-property: all;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+/* Selection color */
+::selection {
+  background-color: var(--dark-hover);
+  color: white;
+}
