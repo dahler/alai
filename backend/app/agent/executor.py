@@ -255,15 +255,22 @@ class ToolExecutor:
         }
 
     async def _execute_web_search(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Search the web using Bing search."""
+        """Search the web using Tavily API."""
+        from app.config import settings
+
         query = params.get("query", "")
         num_results = min(params.get("num_results", 5), 10)
 
-        # Run the synchronous search in a thread pool
+        # Check if Tavily API key is configured
+        if not settings.TAVILY_API_KEY:
+            print("[AGENT] Tavily API key not configured, using Bing fallback")
+            return await self._execute_web_search_fallback(query, num_results)
+
+        # Run the synchronous Tavily search in a thread pool
         try:
             results = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self._sync_web_search(query, num_results)
+                lambda: self._tavily_search(query, num_results)
             )
             return {
                 "query": query,
@@ -271,24 +278,68 @@ class ToolExecutor:
                 "count": len(results),
             }
         except Exception as e:
-            print(f"[AGENT] Web search error: {e}")
+            print(f"[AGENT] Tavily search error: {e}")
+            # Fallback to Bing
+            return await self._execute_web_search_fallback(query, num_results)
+
+    def _tavily_search(self, query: str, num_results: int) -> List[Dict[str, str]]:
+        """Search using Tavily API."""
+        from tavily import TavilyClient
+        from app.config import settings
+
+        try:
+            client = TavilyClient(api_key=settings.TAVILY_API_KEY)
+            response = client.search(
+                query=query,
+                max_results=num_results,
+                include_answer=False,
+                include_raw_content=False,
+            )
+
+            results = []
+            for r in response.get("results", []):
+                results.append({
+                    "title": r.get("title", ""),
+                    "snippet": r.get("content", ""),
+                    "url": r.get("url", ""),
+                })
+
+            print(f"[AGENT] Tavily search found {len(results)} results for: {query[:50]}...")
+            return results
+
+        except Exception as e:
+            print(f"[AGENT] Tavily search failed: {e}")
+            raise
+
+    async def _execute_web_search_fallback(self, query: str, num_results: int) -> Dict[str, Any]:
+        """Fallback web search using Bing."""
+        try:
+            results = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._bing_search(query, num_results)
+            )
+            return {
+                "query": query,
+                "results": results,
+                "count": len(results),
+            }
+        except Exception as e:
+            print(f"[AGENT] Fallback search error: {e}")
             return {
                 "query": query,
                 "results": [],
                 "error": str(e),
             }
 
-    def _sync_web_search(self, query: str, num_results: int) -> List[Dict[str, str]]:
-        """Synchronous web search using Bing."""
+    def _bing_search(self, query: str, num_results: int) -> List[Dict[str, str]]:
+        """Fallback search using Bing."""
         import requests
         from urllib.parse import quote_plus
 
         try:
-            # Use Bing search
             url = f"https://www.bing.com/search?q={quote_plus(query)}&count={num_results}"
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
             }
 
@@ -298,66 +349,21 @@ class ToolExecutor:
             soup = BeautifulSoup(response.text, "html.parser")
             results = []
 
-            # Parse Bing search results
             for result in soup.select(".b_algo")[:num_results]:
                 title_elem = result.select_one("h2 a")
                 snippet_elem = result.select_one(".b_caption p")
 
                 if title_elem:
-                    title = title_elem.get_text(strip=True)
-                    url = title_elem.get("href", "")
-                    snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
-
-                    results.append({
-                        "title": title,
-                        "snippet": snippet,
-                        "url": url,
-                    })
-
-            print(f"[AGENT] Bing search found {len(results)} results for: {query[:50]}...")
-            return results
-
-        except Exception as e:
-            print(f"[AGENT] Bing search failed: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fallback to Google
-            return self._fallback_google_search(query, num_results)
-
-    def _fallback_google_search(self, query: str, num_results: int) -> List[Dict[str, str]]:
-        """Fallback search using Google."""
-        import requests
-        from urllib.parse import quote_plus
-
-        try:
-            url = f"https://www.google.com/search?q={quote_plus(query)}&num={num_results}"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            }
-
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, "html.parser")
-            results = []
-
-            # Parse Google search results
-            for g in soup.select("div.g")[:num_results]:
-                title_elem = g.select_one("h3")
-                link_elem = g.select_one("a")
-                snippet_elem = g.select_one("div[data-sncf]") or g.select_one(".VwiC3b")
-
-                if title_elem and link_elem:
                     results.append({
                         "title": title_elem.get_text(strip=True),
                         "snippet": snippet_elem.get_text(strip=True) if snippet_elem else "",
-                        "url": link_elem.get("href", ""),
+                        "url": title_elem.get("href", ""),
                     })
 
-            print(f"[AGENT] Google fallback found {len(results)} results")
+            print(f"[AGENT] Bing fallback found {len(results)} results")
             return results
         except Exception as e:
-            print(f"[AGENT] Google fallback also failed: {e}")
+            print(f"[AGENT] Bing fallback failed: {e}")
             return []
 
     async def _execute_read_url(self, params: Dict[str, Any]) -> Dict[str, Any]:

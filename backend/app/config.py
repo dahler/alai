@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     OLLAMA_AGENT_MODEL: str = "qwen2.5:14b"  # For agent/planner tasks
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"  # For RAG embeddings
 
+    # Tavily (Web Search)
+    TAVILY_API_KEY: str = ""  # Get from https://tavily.com
+
     # RAG Settings
     RAG_CHUNK_SIZE: int = 500  # Characters per chunk
     RAG_CHUNK_OVERLAP: int = 50  # Overlap between chunks
