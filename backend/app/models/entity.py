@@ -4,7 +4,7 @@ Stores extracted entities from documents with optional embeddings for similarity
 """
 
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, Text, Index, func
+from sqlalchemy import String, Integer, DateTime, Text, Index, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 from typing import TYPE_CHECKING, List, Optional
@@ -74,6 +74,7 @@ class Entity(Base):
 
     # Indexes for efficient querying
     __table_args__ = (
+        UniqueConstraint('entity_type', 'normalized_name', name='uq_entities_type_name'),
         Index('ix_entities_type_name', 'entity_type', 'normalized_name'),
         Index(
             'ix_entities_embedding',

@@ -1,5 +1,5 @@
 import { api } from './api'
-import type { Message } from '../types/chat'
+import type { Message, Source } from '../types/chat'
 
 const API_URL = import.meta.env.VITE_API_URL || ''
 
@@ -29,7 +29,8 @@ export const messagesService = {
     attachmentIds: number[],
     onChunk: (chunk: string) => void,
     onDone: () => void,
-    onError: (error: string) => void
+    onError: (error: string) => void,
+    onSources?: (sources: Source[]) => void
   ): Promise<void> {
     const token = localStorage.getItem('token')
     const headers: HeadersInit = {
@@ -78,6 +79,15 @@ export const messagesService = {
             if (data.startsWith('[ERROR]')) {
               onError(data.slice(8))
               return
+            }
+            if (data.startsWith('[SOURCES]')) {
+              try {
+                const sources: Source[] = JSON.parse(data.slice(9))
+                onSources?.(sources)
+              } catch {
+                // ignore malformed sources
+              }
+              continue
             }
             onChunk(data)
           }

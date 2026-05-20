@@ -1,5 +1,13 @@
 export type MessageRole = 'user' | 'assistant' | 'system'
 
+export interface Source {
+  number: number
+  filename: string
+  stored_filename: string
+  document_id: number
+  chunk_text?: string
+}
+
 export interface Attachment {
   id: number
   filename: string
@@ -17,6 +25,7 @@ export interface Message {
   content: string
   created_at: string
   attachments: Attachment[]
+  sources?: Source[]
 }
 
 export interface Conversation {

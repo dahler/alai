@@ -316,6 +316,35 @@ final_answer_tool = Tool(
     ],
 )
 
+# Yahoo Finance Tool
+yahoo_finance_tool = Tool(
+    name="yahoo_finance",
+    description="Get stock market and currency data from Yahoo Finance. Use for stock prices, company info, historical data, financial metrics, and exchange rates.",
+    category=ToolCategory.WEB,
+    parameters=[
+        ToolParameter(
+            name="symbol",
+            type="string",
+            description="Stock ticker or currency pair (e.g., 'AAPL', 'GOOGL', 'BBRI.JK' for Indonesian stocks, 'IDR=X' for USD/IDR rate, 'EUR=X' for USD/EUR)",
+        ),
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Type of data to retrieve",
+            required=False,
+            default="quote",
+            enum=["quote", "info", "history", "financials", "news"],
+        ),
+        ToolParameter(
+            name="period",
+            type="string",
+            description="Time period for historical data (e.g., '1d', '5d', '1mo', '3mo', '1y')",
+            required=False,
+            default="1mo",
+        ),
+    ],
+)
+
 
 # Register all built-in tools
 def register_builtin_tools():
@@ -331,6 +360,7 @@ def register_builtin_tools():
         file_read_tool,
         create_task_tool,
         final_answer_tool,
+        yahoo_finance_tool,
     ]
     for tool in tools:
         tool_registry.register(tool)

@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { documentsService, Document, UploadStats, GraphStats } from '../services/documents'
+import { documentsService, Document, BatchUploadResponse, GraphStats, GraphStatus } from '../services/documents'
 import { useAuthStore } from '../store/authStore'
 
 type TabType = 'personal' | 'company'
@@ -20,7 +20,8 @@ export function Documents() {
   // Upload state
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [uploadStats, setUploadStats] = useState<UploadStats | null>(null)
+  const [uploadingFileCount, setUploadingFileCount] = useState(0)
+  const [batchResults, setBatchResults] = useState<BatchUploadResponse | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
   // Upload options
@@ -31,7 +32,10 @@ export function Documents() {
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
 
-  const fetchDocuments = async () => {
+  // Re-extract graph state: set of doc IDs currently triggering re-extraction
+  const [reExtracting, setReExtracting] = useState<Set<number>>(new Set())
+
+  const fetchDocuments = useCallback(async () => {
     setIsLoading(true)
     try {
       const data = await documentsService.list()
@@ -42,7 +46,7 @@ export function Documents() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
 
   const fetchGraphStats = async () => {
     try {
@@ -53,28 +57,57 @@ export function Documents() {
     }
   }
 
+  // Poll graph status for documents that are still processing
+  useEffect(() => {
+    const allDocs = [...personalDocs, ...companyDocs]
+    const inProgress = allDocs.filter(
+      (d) => d.graph_status === 'pending' || d.graph_status === 'processing'
+    )
+    if (inProgress.length === 0) return
+
+    const timer = setInterval(async () => {
+      let anyChanged = false
+      const updates = await Promise.all(
+        inProgress.map((d) => documentsService.getGraphStatus(d.id).catch(() => null))
+      )
+      const updateDoc = (docs: Document[]) =>
+        docs.map((d) => {
+          const u = updates.find((r) => r?.id === d.id)
+          if (u && u.graph_status !== d.graph_status) { anyChanged = true; return { ...d, graph_status: u.graph_status } }
+          return d
+        })
+
+      setPersonalDocs((prev) => updateDoc(prev))
+      setCompanyDocs((prev) => updateDoc(prev))
+      if (anyChanged) fetchGraphStats()
+    }, 4000)
+
+    return () => clearInterval(timer)
+  }, [personalDocs, companyDocs])
+
   useEffect(() => {
     fetchDocuments()
     fetchGraphStats()
   }, [])
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
 
     setIsUploading(true)
     setUploadProgress(0)
-    setUploadStats(null)
+    setUploadingFileCount(files.length)
+    setBatchResults(null)
     setUploadError(null)
 
     try {
-      const response = await documentsService.upload(
-        file,
+      const response = await documentsService.uploadBatch(
+        files,
         uploadAsCompany,
         extractGraph,
         (progress) => setUploadProgress(progress)
       )
-      setUploadStats(response.stats)
+      setBatchResults(response)
       await fetchDocuments()
       await fetchGraphStats()
     } catch (error: any) {
@@ -103,6 +136,22 @@ export function Documents() {
       alert(error.response?.data?.detail || 'Failed to delete document')
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  const handleReExtractGraph = async (docId: number) => {
+    setReExtracting((prev) => new Set(prev).add(docId))
+    try {
+      await documentsService.reExtractGraph(docId)
+      // Update the doc's graph_status to 'pending' immediately so polling kicks in
+      const setPending = (docs: Document[]) =>
+        docs.map((d) => (d.id === docId ? { ...d, graph_status: 'pending' as GraphStatus } : d))
+      setPersonalDocs((prev) => setPending(prev))
+      setCompanyDocs((prev) => setPending(prev))
+    } catch (error: any) {
+      alert(error.response?.data?.detail || 'Failed to start graph extraction')
+    } finally {
+      setReExtracting((prev) => { const s = new Set(prev); s.delete(docId); return s })
     }
   }
 
@@ -140,6 +189,42 @@ export function Documents() {
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
       </svg>
     )
+  }
+
+  const GraphStatusBadge = ({ status }: { status: GraphStatus | undefined }) => {
+    if (!status || status === 'skipped') return null
+    if (status === 'pending' || status === 'processing') {
+      return (
+        <span className="flex items-center gap-1 px-2 py-1 text-xs bg-yellow-900/30 text-yellow-400 rounded">
+          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+          </svg>
+          Graph
+        </span>
+      )
+    }
+    if (status === 'done') {
+      return (
+        <span className="flex items-center gap-1 px-2 py-1 text-xs bg-purple-900/30 text-purple-400 rounded" title="Knowledge graph extracted">
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          Graph
+        </span>
+      )
+    }
+    if (status === 'failed') {
+      return (
+        <span className="flex items-center gap-1 px-2 py-1 text-xs bg-red-900/30 text-red-400 rounded" title="Graph extraction failed">
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M12 3a9 9 0 100 18A9 9 0 0012 3z" />
+          </svg>
+          Graph
+        </span>
+      )
+    }
+    return null
   }
 
   const currentDocs = activeTab === 'personal' ? personalDocs : companyDocs
@@ -193,6 +278,7 @@ export function Documents() {
               ref={fileInputRef}
               type="file"
               accept=".pdf,.txt,.md,.json,.html,.xml"
+              multiple
               onChange={handleFileSelect}
               className="hidden"
               disabled={isUploading || !user}
@@ -207,24 +293,24 @@ export function Documents() {
               </div>
             ) : isUploading ? (
               <div className="border-2 border-dark-chat rounded-lg p-6">
-                <div className="flex items-center gap-4">
-                  <div className="flex-1">
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-dark-text">Uploading & Processing...</span>
-                      <span className="text-dark-muted">{uploadProgress}%</span>
-                    </div>
-                    <div className="w-full bg-dark-chat rounded-full h-2">
-                      <div
-                        className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${uploadProgress}%` }}
-                      />
-                    </div>
-                    {uploadProgress === 100 && (
-                      <p className="text-sm text-dark-muted mt-2">
-                        Extracting entities and building knowledge graph...
-                      </p>
-                    )}
+                <div className="flex-1">
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-dark-text">
+                      Uploading {uploadingFileCount} {uploadingFileCount === 1 ? 'file' : 'files'}...
+                    </span>
+                    <span className="text-dark-muted">{uploadProgress}%</span>
                   </div>
+                  <div className="w-full bg-dark-chat rounded-full h-2">
+                    <div
+                      className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  {uploadProgress >= 95 && (
+                    <p className="text-sm text-dark-muted mt-2">
+                      Indexing chunks and generating embeddings...
+                    </p>
+                  )}
                 </div>
               </div>
             ) : (
@@ -235,29 +321,56 @@ export function Documents() {
                 <svg className="w-10 h-10 text-dark-muted group-hover:text-blue-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                 </svg>
-                <p className="text-dark-text font-medium">Click to upload document</p>
-                <p className="text-sm text-dark-muted mt-1">PDF, TXT, MD, JSON, HTML, XML</p>
+                <p className="text-dark-text font-medium">Click to upload documents</p>
+                <p className="text-sm text-dark-muted mt-1">PDF, TXT, MD, JSON, HTML, XML — multiple files supported</p>
               </button>
             )}
 
             {/* Upload Result */}
-            {uploadStats && (
-              <div className="mt-3 p-3 bg-green-900/20 border border-green-700 rounded-lg">
-                <p className="text-green-400 font-medium mb-2">Document processed successfully!</p>
-                <div className="grid grid-cols-3 gap-2 text-sm">
-                  <div>
-                    <span className="text-dark-muted">Chunks:</span>
-                    <span className="text-dark-text ml-1">{uploadStats.chunks_created}</span>
-                  </div>
-                  <div>
-                    <span className="text-dark-muted">Entities:</span>
-                    <span className="text-dark-text ml-1">{uploadStats.entities_extracted}</span>
-                  </div>
-                  <div>
-                    <span className="text-dark-muted">Relations:</span>
-                    <span className="text-dark-text ml-1">{uploadStats.relationships_created}</span>
-                  </div>
+            {batchResults && (
+              <div className="mt-3 space-y-2">
+                <div className={`p-3 rounded-lg border ${
+                  batchResults.failed === 0
+                    ? 'bg-green-900/20 border-green-700'
+                    : batchResults.succeeded === 0
+                      ? 'bg-red-900/20 border-red-700'
+                      : 'bg-yellow-900/20 border-yellow-700'
+                }`}>
+                  <p className={`font-medium mb-1 ${
+                    batchResults.failed === 0 ? 'text-green-400' : batchResults.succeeded === 0 ? 'text-red-400' : 'text-yellow-400'
+                  }`}>
+                    {batchResults.succeeded} of {batchResults.total} {batchResults.total === 1 ? 'file' : 'files'} processed successfully
+                    {batchResults.failed > 0 && ` (${batchResults.failed} failed)`}
+                  </p>
+                  {batchResults.succeeded > 0 && (() => {
+                    const totalChunks = batchResults.results
+                      .filter(r => r.status === 'success' && r.stats)
+                      .reduce((acc, r) => acc + (r.stats?.chunks_created ?? 0), 0)
+                    const graphPending = batchResults.results
+                      .filter(r => r.status === 'success' && (r.graph_status === 'pending' || r.graph_status === 'processing'))
+                      .length
+                    return (
+                      <div className="text-sm space-y-1">
+                        <div><span className="text-dark-muted">Chunks indexed:</span><span className="text-dark-text ml-1">{totalChunks}</span></div>
+                        {graphPending > 0 && (
+                          <div className="flex items-center gap-1 text-yellow-400">
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                            </svg>
+                            Knowledge graph extraction running in background
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
                 </div>
+                {batchResults.results.filter(r => r.status === 'error').map((r, i) => (
+                  <div key={i} className="p-2 bg-red-900/20 border border-red-700 rounded-lg text-sm">
+                    <span className="text-red-400 font-medium">{r.filename}</span>
+                    <span className="text-dark-muted ml-2">{r.error}</span>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -288,22 +401,17 @@ export function Documents() {
                     <p className="text-dark-muted text-xs">Only you can access via RAG</p>
                   </div>
                 </label>
-                <label className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer ${
-                  user?.is_admin ? 'hover:bg-dark-chat' : 'opacity-50 cursor-not-allowed'
-                }`}>
+                <label className="flex items-center gap-3 p-2 rounded-lg hover:bg-dark-chat cursor-pointer">
                   <input
                     type="radio"
                     name="visibility"
                     checked={uploadAsCompany}
                     onChange={() => setUploadAsCompany(true)}
-                    disabled={!user?.is_admin}
                     className="w-4 h-4 text-blue-500"
                   />
                   <div>
                     <p className="text-dark-text text-sm">Company</p>
-                    <p className="text-dark-muted text-xs">
-                      {user?.is_admin ? 'Everyone can access via RAG' : 'Admin only'}
-                    </p>
+                    <p className="text-dark-muted text-xs">Everyone can access via RAG</p>
                   </div>
                 </label>
               </div>
@@ -398,6 +506,26 @@ export function Documents() {
                     <span className="px-2 py-1 text-xs bg-purple-900/30 text-purple-400 rounded">
                       Company
                     </span>
+                  )}
+                  <GraphStatusBadge status={doc.graph_status} />
+                  {user && (
+                    <button
+                      onClick={() => handleReExtractGraph(doc.id)}
+                      disabled={reExtracting.has(doc.id) || doc.graph_status === 'pending' || doc.graph_status === 'processing'}
+                      className="p-2 text-dark-muted hover:text-purple-400 hover:bg-dark-chat rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Re-extract knowledge graph"
+                    >
+                      {reExtracting.has(doc.id) ? (
+                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      )}
+                    </button>
                   )}
                   <button
                     onClick={() => setDeleteConfirm(doc.id)}

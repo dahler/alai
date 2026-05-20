@@ -8,6 +8,7 @@ import asyncio
 import json
 import math
 import re
+import time
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +19,11 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.agent.tools import Tool, tool_registry, ToolCategory
+
+
+def log(message: str):
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[{timestamp}] [TOOL] {message}", flush=True)
 
 
 class ExecutionStatus(str, Enum):
@@ -152,12 +158,37 @@ class ToolExecutor:
             )
 
         # Execute with timeout
+        params_preview = json.dumps(parameters, default=str)
+        params_preview = params_preview if len(params_preview) <= 120 else params_preview[:120] + "..."
+        log(f"{'─'*50}")
+        log(f"▶ CALLING: {tool_name}")
+        log(f"  PARAMS : {params_preview}")
+
         try:
             result = await asyncio.wait_for(
                 self._execute_tool(tool_name, parameters),
                 timeout=self.timeout,
             )
             elapsed = asyncio.get_event_loop().time() - start_time
+
+            # Summarise result for log
+            if isinstance(result, dict):
+                if "results" in result:
+                    summary = f"{result.get('count', len(result['results']))} result(s)"
+                elif "error" in result:
+                    summary = f"error: {result['error']}"
+                elif "rate" in result or "price" in result:
+                    price = result.get("rate") or result.get("price")
+                    summary = f"price/rate = {price}"
+                else:
+                    summary = str(result)[:120]
+            else:
+                summary = str(result)[:120]
+
+            log(f"  STATUS : SUCCESS ({elapsed:.2f}s)")
+            log(f"  RESULT : {summary}")
+            log(f"{'─'*50}")
+
             return ToolResult(
                 tool_name=tool_name,
                 status=ExecutionStatus.SUCCESS,
@@ -165,6 +196,8 @@ class ToolExecutor:
                 execution_time=elapsed,
             )
         except asyncio.TimeoutError:
+            log(f"  STATUS : TIMEOUT after {self.timeout}s")
+            log(f"{'─'*50}")
             return ToolResult(
                 tool_name=tool_name,
                 status=ExecutionStatus.TIMEOUT,
@@ -173,6 +206,9 @@ class ToolExecutor:
             )
         except Exception as e:
             elapsed = asyncio.get_event_loop().time() - start_time
+            log(f"  STATUS : ERROR ({elapsed:.2f}s)")
+            log(f"  ERROR  : {str(e)}")
+            log(f"{'─'*50}")
             return ToolResult(
                 tool_name=tool_name,
                 status=ExecutionStatus.ERROR,
@@ -201,6 +237,7 @@ class ToolExecutor:
             "read_file": self._execute_read_file,
             "create_subtask": self._execute_create_subtask,
             "final_answer": self._execute_final_answer,
+            "yahoo_finance": self._execute_yahoo_finance,
         }
 
         handler = handlers.get(tool_name)
@@ -223,14 +260,18 @@ class ToolExecutor:
         if not self.db_session:
             return {"error": "Database session not available"}
 
-        kg_service = KnowledgeGraphService(self.db_session)
-        results = await kg_service.hybrid_search(
-            query=query,
-            user_id=self.user_id,
-            top_k=top_k,
-            vector_weight=0.6,
-            graph_weight=0.4,
-        )
+        try:
+            kg_service = KnowledgeGraphService(self.db_session)
+            results = await kg_service.hybrid_search(
+                query=query,
+                user_id=self.user_id,
+                top_k=top_k,
+                vector_weight=0.6,
+                graph_weight=0.4,
+            )
+        except Exception as e:
+            await self.db_session.rollback()
+            return {"error": f"RAG search failed: {str(e)}"}
 
         if not results:
             return {
@@ -590,10 +631,14 @@ class ToolExecutor:
             return {"error": "Database session not available"}
 
         # Get attachment
-        result = await self.db_session.execute(
-            select(Attachment).where(Attachment.id == file_id)
-        )
-        attachment = result.scalar_one_or_none()
+        try:
+            result = await self.db_session.execute(
+                select(Attachment).where(Attachment.id == file_id)
+            )
+            attachment = result.scalar_one_or_none()
+        except Exception as e:
+            await self.db_session.rollback()
+            return {"error": f"Database error reading file: {str(e)}"}
 
         if not attachment:
             return {"error": f"File with ID {file_id} not found"}
@@ -647,3 +692,159 @@ class ToolExecutor:
             "answer": answer,
             "sources": sources,
         }
+
+    async def _execute_yahoo_finance(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Get stock data from Yahoo Finance."""
+        symbol = params.get("symbol", "").upper()
+        action = params.get("action", "quote")
+        period = params.get("period", "1mo")
+
+        if not symbol:
+            return {"error": "Stock symbol is required"}
+
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._yahoo_finance_sync(symbol, action, period)
+            )
+            return result
+        except Exception as e:
+            print(f"[AGENT] Yahoo Finance error: {e}")
+            return {
+                "symbol": symbol,
+                "error": str(e),
+            }
+
+    def _yahoo_finance_sync(self, symbol: str, action: str, period: str) -> Dict[str, Any]:
+        """Synchronous Yahoo Finance data fetching."""
+        import yfinance as yf
+
+        try:
+            ticker = yf.Ticker(symbol)
+
+            if action == "quote":
+                # Get current quote
+                info = ticker.fast_info
+
+                # Check if this is a currency pair (e.g., IDR=X, EUR=X)
+                is_currency = symbol.endswith("=X")
+
+                result = {
+                    "symbol": symbol,
+                    "action": "quote",
+                    "price": getattr(info, 'last_price', None),
+                    "previous_close": getattr(info, 'previous_close', None),
+                    "open": getattr(info, 'open', None),
+                    "day_high": getattr(info, 'day_high', None),
+                    "day_low": getattr(info, 'day_low', None),
+                }
+
+                if is_currency:
+                    # For currency pairs, add helpful context
+                    base_currency = symbol.replace("=X", "")
+                    result["type"] = "currency_pair"
+                    result["description"] = f"USD to {base_currency} exchange rate"
+                    result["rate"] = getattr(info, 'last_price', None)
+                else:
+                    result["volume"] = getattr(info, 'last_volume', None)
+                    result["market_cap"] = getattr(info, 'market_cap', None)
+                    result["currency"] = getattr(info, 'currency', 'USD')
+
+                return result
+
+            elif action == "info":
+                # Get detailed company info
+                info = ticker.info
+                return {
+                    "symbol": symbol,
+                    "action": "info",
+                    "name": info.get("longName", info.get("shortName", symbol)),
+                    "sector": info.get("sector"),
+                    "industry": info.get("industry"),
+                    "country": info.get("country"),
+                    "website": info.get("website"),
+                    "description": info.get("longBusinessSummary", "")[:500] + "..." if info.get("longBusinessSummary") else None,
+                    "employees": info.get("fullTimeEmployees"),
+                    "market_cap": info.get("marketCap"),
+                    "pe_ratio": info.get("trailingPE"),
+                    "forward_pe": info.get("forwardPE"),
+                    "dividend_yield": info.get("dividendYield"),
+                    "52_week_high": info.get("fiftyTwoWeekHigh"),
+                    "52_week_low": info.get("fiftyTwoWeekLow"),
+                }
+
+            elif action == "history":
+                # Get historical data
+                hist = ticker.history(period=period)
+                if hist.empty:
+                    return {
+                        "symbol": symbol,
+                        "action": "history",
+                        "error": "No historical data available",
+                    }
+
+                # Get summary statistics
+                latest = hist.iloc[-1]
+                first = hist.iloc[0]
+                change = ((latest['Close'] - first['Close']) / first['Close']) * 100
+
+                return {
+                    "symbol": symbol,
+                    "action": "history",
+                    "period": period,
+                    "start_date": str(hist.index[0].date()),
+                    "end_date": str(hist.index[-1].date()),
+                    "start_price": round(first['Close'], 2),
+                    "end_price": round(latest['Close'], 2),
+                    "change_percent": round(change, 2),
+                    "high": round(hist['High'].max(), 2),
+                    "low": round(hist['Low'].min(), 2),
+                    "avg_volume": int(hist['Volume'].mean()),
+                    "data_points": len(hist),
+                }
+
+            elif action == "financials":
+                # Get financial data
+                info = ticker.info
+                return {
+                    "symbol": symbol,
+                    "action": "financials",
+                    "revenue": info.get("totalRevenue"),
+                    "gross_profit": info.get("grossProfits"),
+                    "net_income": info.get("netIncomeToCommon"),
+                    "ebitda": info.get("ebitda"),
+                    "total_cash": info.get("totalCash"),
+                    "total_debt": info.get("totalDebt"),
+                    "free_cash_flow": info.get("freeCashflow"),
+                    "operating_cash_flow": info.get("operatingCashflow"),
+                    "profit_margins": info.get("profitMargins"),
+                    "return_on_equity": info.get("returnOnEquity"),
+                }
+
+            elif action == "news":
+                # Get recent news
+                news = ticker.news
+                news_items = []
+                for item in news[:5]:  # Limit to 5 news items
+                    news_items.append({
+                        "title": item.get("title"),
+                        "publisher": item.get("publisher"),
+                        "link": item.get("link"),
+                        "published": item.get("providerPublishTime"),
+                    })
+
+                return {
+                    "symbol": symbol,
+                    "action": "news",
+                    "news": news_items,
+                }
+
+            else:
+                return {
+                    "symbol": symbol,
+                    "error": f"Unknown action: {action}. Use: quote, info, history, financials, or news",
+                }
+
+        except Exception as e:
+            print(f"[AGENT] Yahoo Finance sync error: {e}")
+            raise

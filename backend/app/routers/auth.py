@@ -23,27 +23,38 @@ async def login(request: Request, response: Response):
 
 @router.get("/callback")
 async def callback(
-    code: str,
+    request: Request,
+    code: str | None = None,
     state: str | None = None,
-    request: Request = None,
+    error: str | None = None,
+    error_description: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:3000"
+
+    # Microsoft returned an error (e.g. redirect URI mismatch, user cancelled)
+    if error:
+        print(f"[AUTH] Microsoft OAuth error: {error} — {error_description}")
+        return RedirectResponse(
+            url=f"{frontend_url}/auth/callback?error={error}&error_description={error_description or ''}"
+        )
+
+    if not code:
+        return RedirectResponse(
+            url=f"{frontend_url}/auth/callback?error=missing_code"
+        )
+
     try:
         auth_service = AuthService(db)
         user, token = await auth_service.authenticate_microsoft(
             code=code,
-            anonymous_session_id=state,
+            state=state,
         )
-
-        # Redirect to frontend with token
-        frontend_url = settings.CORS_ORIGINS[0] if settings.CORS_ORIGINS else "http://localhost:3000"
-        redirect_url = f"{frontend_url}/auth/callback?token={token.access_token}"
-
-        return RedirectResponse(url=redirect_url)
+        return RedirectResponse(url=f"{frontend_url}/auth/callback?token={token.access_token}")
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Authentication failed: {str(e)}",
+        print(f"[AUTH] Authentication failed: {str(e)}")
+        return RedirectResponse(
+            url=f"{frontend_url}/auth/callback?error=auth_failed&error_description={str(e)}"
         )
 
 

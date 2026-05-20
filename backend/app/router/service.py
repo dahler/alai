@@ -24,6 +24,28 @@ def log(message: str):
     print(f"[{timestamp}] [ROUTER] {message}")
 
 
+# Common Indonesian function words — fast heuristic, no LLM needed
+_ID_MARKERS = {
+    "yang", "dan", "di", "ke", "dari", "dengan", "untuk", "pada",
+    "ini", "itu", "saya", "anda", "kamu", "mereka", "kami", "kita",
+    "ada", "tidak", "bisa", "akan", "sudah", "sedang", "belum", "lagi",
+    "juga", "harga", "lihat", "cari", "apa", "bagaimana", "siapa",
+    "berapa", "kapan", "dimana", "mengapa", "kenapa", "apakah",
+    "adalah", "dalam", "oleh", "atau", "jika", "maka", "namun",
+    "saat", "sekarang", "terbaru", "berita", "cuaca", "kurs",
+}
+
+DETECT_TRANSLATE_PROMPT = """Detect the language of the query and translate it to English.
+
+Query: {query}
+
+Output ONLY valid JSON with no extra text:
+{{"lang": "<iso-639-1 code>", "english": "<English translation>"}}
+
+If already English, set lang to "en" and copy the query unchanged.
+JSON:"""
+
+
 # Optimized router prompt - minimal tokens, maximum clarity
 ROUTER_PROMPT = """You are a request classifier. Classify the user request into ONE action.
 
@@ -63,6 +85,7 @@ class RouterService:
         query: str,
         has_attachments: bool = False,
         has_images: bool = False,
+        has_knowledge_base: bool = False,
     ) -> RouterResult:
         """
         Classify a user request into an action type.
@@ -82,9 +105,12 @@ class RouterService:
         log(f"Query: {query[:80]}{'...' if len(query) > 80 else ''}")
         log(f"Has attachments: {has_attachments}")
         log(f"Has images: {has_images}")
+        log(f"Has knowledge base: {has_knowledge_base}")
 
         # Fast path: Check for obvious patterns first (no LLM call needed)
-        quick_result = self._quick_classify(query, has_attachments, has_images)
+        quick_result = self._quick_classify(
+            query, has_attachments, has_images, has_knowledge_base
+        )
         if quick_result and quick_result.confidence >= CONFIDENCE_THRESHOLD_HIGH:
             elapsed = time.time() - start_time
             log(f"⚡ QUICK CLASSIFY (no LLM needed)")
@@ -111,6 +137,20 @@ class RouterService:
                 log(f"⚠ Low confidence, using quick classify fallback")
                 result = quick_result
 
+            # If LLM said direct_answer but user has a knowledge base,
+            # treat it as RAG — let the search decide if results are relevant.
+            if (
+                result.action == RouterAction.DIRECT_ANSWER
+                and has_knowledge_base
+                and result.confidence < CONFIDENCE_THRESHOLD_HIGH
+            ):
+                log(f"⚠ User has knowledge base — overriding direct_answer → rag_search")
+                result = RouterResult(
+                    action=RouterAction.RAG_SEARCH,
+                    confidence=0.75,
+                    reason="knowledge_base_override"
+                )
+
             log("=" * 50)
             return result
 
@@ -136,6 +176,7 @@ class RouterService:
         query: str,
         has_attachments: bool,
         has_images: bool,
+        has_knowledge_base: bool = False,
     ) -> Optional[RouterResult]:
         """
         Quick rule-based classification without LLM.
@@ -151,10 +192,39 @@ class RouterService:
                 reason="image_attached"
             )
 
-        # Check RAG_SEARCH keywords FIRST (document/knowledge base queries)
-        # These take priority over AGENTIC for queries about uploaded docs
+        # Score agentic and RAG keywords up front so we can use both before the KB bias.
+        agentic_keywords = ACTION_KEYWORDS.get(RouterAction.AGENTIC, [])
         rag_keywords = ACTION_KEYWORDS.get(RouterAction.RAG_SEARCH, [])
+        agentic_matches = sum(1 for kw in agentic_keywords if kw in query_lower)
         rag_matches = sum(1 for kw in rag_keywords if kw in query_lower)
+
+        # 2+ agentic signals → definitely real-time (beats KB bias and RAG)
+        if agentic_matches >= 2:
+            return RouterResult(
+                action=RouterAction.AGENTIC,
+                confidence=min(0.8 + (agentic_matches * 0.05), 0.95),
+                reason=f"agentic_keyword_match_{agentic_matches}"
+            )
+
+        # 1 agentic signal + no document keywords → real-time query, even with a KB
+        if agentic_matches >= 1 and rag_matches == 0:
+            log(f"Quick classify: AGENTIC (1 keyword, no RAG signal)")
+            return RouterResult(
+                action=RouterAction.AGENTIC,
+                confidence=0.82,
+                reason=f"agentic_keyword_no_rag_conflict"
+            )
+
+        # If the user has a knowledge base, bias toward RAG for any non-trivial query
+        # (only reached when there is no unambiguous real-time signal above)
+        if has_knowledge_base and len(query_lower.split()) >= 3:
+            return RouterResult(
+                action=RouterAction.RAG_SEARCH,
+                confidence=0.78,
+                reason="knowledge_base_default"
+            )
+
+        # Clear RAG document keywords
         if rag_matches >= 1:
             log(f"Quick classify: RAG_SEARCH (matched {rag_matches} keyword(s))")
             return RouterResult(
@@ -163,9 +233,7 @@ class RouterService:
                 reason=f"rag_keyword_match_{rag_matches}"
             )
 
-        # Check for AGENTIC keywords (web search, current info)
-        agentic_keywords = ACTION_KEYWORDS.get(RouterAction.AGENTIC, [])
-        agentic_matches = sum(1 for kw in agentic_keywords if kw in query_lower)
+        # Remaining agentic matches (reached only when rag_matches >= 1 too)
         if agentic_matches >= 1:
             log(f"Quick classify: AGENTIC (matched {agentic_matches} keyword(s))")
             return RouterResult(
@@ -310,6 +378,50 @@ class RouterService:
             if action.value in text_lower:
                 return action
         return None
+
+    def _is_likely_english(self, text: str) -> bool:
+        """Heuristic: 2+ Indonesian marker words → treat as Indonesian."""
+        words = set(text.lower().split())
+        return len(words & _ID_MARKERS) < 2
+
+    async def detect_and_translate(self, query: str) -> tuple[str, str]:
+        """
+        Detect query language and translate to English if needed.
+
+        Returns:
+            (lang_code, english_query)
+            lang_code is an ISO-639-1 code, e.g. "id", "en".
+        """
+        if self._is_likely_english(query):
+            return "en", query
+
+        prompt = DETECT_TRANSLATE_PROMPT.format(query=query[:300])
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/generate",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": 0.1, "num_predict": 120},
+                    },
+                )
+                response.raise_for_status()
+                raw = response.json().get("response", "")
+
+            match = re.search(r'\{[^{}]*\}', raw)
+            if match:
+                data = json.loads(match.group())
+                lang = data.get("lang", "en")
+                english = data.get("english", query).strip()
+                if english:
+                    log(f"Translated [{lang}] → EN: {english[:80]}")
+                    return lang, english
+        except Exception as exc:
+            log(f"Translation failed ({exc}), using original query")
+
+        return "en", query
 
     async def health_check(self) -> bool:
         """Check if the router model is available."""

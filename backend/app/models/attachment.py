@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import String, Integer, DateTime, ForeignKey, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 from app.database import Base
 
@@ -26,6 +26,8 @@ class Attachment(Base):
     is_company_doc: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     # Whether this document has been processed for RAG
     is_embedded: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Graph extraction status: None=not requested, pending/processing/done/failed/skipped
+    graph_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, default=None)
 
     filename: Mapped[str] = mapped_column(String(255))
     original_filename: Mapped[str] = mapped_column(String(255))

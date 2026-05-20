@@ -10,6 +10,7 @@ from typing import Optional
 from difflib import SequenceMatcher
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.entity import Entity
 from app.models.relationship import EntityRelationship
@@ -114,9 +115,9 @@ class GraphLinkingService:
             select(Entity).where(
                 Entity.normalized_name == normalized_name,
                 Entity.entity_type == entity_type,
-            )
+            ).limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def _find_fuzzy_match(
         self,
@@ -208,12 +209,20 @@ class GraphLinkingService:
         chunk_id: Optional[int] = None,
     ) -> Entity:
         """Create a new entity in the database."""
-        # Generate embedding for the entity name
+        normalized_name = extracted.normalize_name()
+
+        # Double-check inside the create to handle within-session races
+        # (e.g. two chunks of the same document mentioning the same entity).
+        existing = await self._find_exact_match(normalized_name, extracted.entity_type)
+        if existing:
+            await self._update_entity_mention(existing, extracted, document_id, chunk_id)
+            return existing
+
         embedding = await self.embedding_service.embed_text(extracted.name)
 
         entity = Entity(
             name=extracted.name,
-            normalized_name=extracted.normalize_name(),
+            normalized_name=normalized_name,
             entity_type=extracted.entity_type,
             embedding=embedding,
             mention_count=1,
@@ -221,15 +230,20 @@ class GraphLinkingService:
         self.db.add(entity)
         await self.db.flush()  # Get the ID
 
-        # Link to document if provided
+        # Link to document (upsert to avoid duplicate key on re-processing)
         if document_id:
-            doc_entity = DocumentEntity(
-                document_id=document_id,
-                entity_id=entity.id,
-                chunk_id=chunk_id,
-                confidence=extracted.confidence,
+            await self.db.execute(
+                pg_insert(DocumentEntity).values(
+                    document_id=document_id,
+                    entity_id=entity.id,
+                    chunk_id=chunk_id,
+                    mention_count=1,
+                    confidence=extracted.confidence,
+                ).on_conflict_do_update(
+                    index_elements=["document_id", "entity_id"],
+                    set_={"mention_count": DocumentEntity.mention_count + 1},
+                )
             )
-            self.db.add(doc_entity)
 
         return entity
 
@@ -244,25 +258,18 @@ class GraphLinkingService:
         entity.mention_count += 1
 
         if document_id:
-            # Check if document link exists
-            result = await self.db.execute(
-                select(DocumentEntity).where(
-                    DocumentEntity.document_id == document_id,
-                    DocumentEntity.entity_id == entity.id,
-                )
-            )
-            doc_entity = result.scalar_one_or_none()
-
-            if doc_entity:
-                doc_entity.mention_count += 1
-            else:
-                doc_entity = DocumentEntity(
+            await self.db.execute(
+                pg_insert(DocumentEntity).values(
                     document_id=document_id,
                     entity_id=entity.id,
                     chunk_id=chunk_id,
+                    mention_count=1,
                     confidence=extracted.confidence,
+                ).on_conflict_do_update(
+                    index_elements=["document_id", "entity_id"],
+                    set_={"mention_count": DocumentEntity.mention_count + 1},
                 )
-                self.db.add(doc_entity)
+            )
 
     async def _add_entity_alias(self, entity: Entity, alias: str):
         """Add an alias to an entity."""
@@ -299,15 +306,15 @@ class GraphLinkingService:
         Returns:
             Created or existing EntityRelationship
         """
-        # Check if relationship already exists
+        # Check if relationship already exists (use first() — duplicates can exist without a DB unique constraint)
         result = await self.db.execute(
             select(EntityRelationship).where(
                 EntityRelationship.source_entity_id == source_entity.id,
                 EntityRelationship.relation_type == extracted.relation_type,
                 EntityRelationship.target_entity_id == target_entity.id,
-            )
+            ).limit(1)
         )
-        existing = result.scalar_one_or_none()
+        existing = result.scalars().first()
 
         if existing:
             log(f"Relationship exists: {source_entity.name} -> {existing.relation_type} -> {target_entity.name}")

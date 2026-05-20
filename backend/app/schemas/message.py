@@ -1,6 +1,6 @@
 from datetime import datetime
-from pydantic import BaseModel
-from typing import Literal
+from typing import Any, Literal
+from pydantic import BaseModel, field_validator
 
 
 class AttachmentInfo(BaseModel):
@@ -30,6 +30,12 @@ class MessageResponse(MessageBase):
     conversation_id: int
     created_at: datetime
     attachments: list[AttachmentInfo] = []
+    sources: list = []
+
+    @field_validator('sources', mode='before')
+    @classmethod
+    def coerce_none(cls, v: Any) -> list:
+        return v if v is not None else []
 
     class Config:
         from_attributes = True

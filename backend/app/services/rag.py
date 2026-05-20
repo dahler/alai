@@ -314,6 +314,7 @@ class RAGService:
                 "file_size": att.file_size,
                 "is_company_doc": att.is_company_doc,
                 "created_at": att.created_at.isoformat(),
+                "graph_status": att.graph_status,
             }
             for att in attachments
         ]
@@ -339,6 +340,7 @@ class RAGService:
                 "content_type": att.content_type,
                 "file_size": att.file_size,
                 "created_at": att.created_at.isoformat(),
+                "graph_status": att.graph_status,
             }
             for att in attachments
         ]

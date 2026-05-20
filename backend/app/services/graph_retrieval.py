@@ -31,7 +31,8 @@ class RetrievalResult:
     chunk_id: int
     chunk_text: str
     document_id: int
-    filename: str
+    filename: str           # original filename shown to users
+    stored_filename: str = ""  # server-side filename used in download URL
     vector_score: float = 0.0
     graph_score: float = 0.0
     combined_score: float = 0.0
@@ -169,6 +170,7 @@ class GraphRetrievalService:
                 chunk_text=chunk.chunk_text,
                 document_id=chunk.attachment_id,
                 filename=attachment.original_filename if attachment else "Unknown",
+                stored_filename=attachment.filename if attachment else "",
                 vector_score=similarity,
                 source="vector",
             ))
@@ -289,6 +291,7 @@ class GraphRetrievalService:
                 chunk_text=chunk.chunk_text,
                 document_id=chunk.attachment_id,
                 filename=attachment.original_filename if attachment else "Unknown",
+                stored_filename=attachment.filename if attachment else "",
                 graph_score=graph_score,
                 matched_entities=matched,
                 relationships=rels[:5],  # Limit relationships

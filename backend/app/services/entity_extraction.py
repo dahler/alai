@@ -21,6 +21,7 @@ def log(message: str):
 
 # Supported entity types
 ENTITY_TYPES = [
+    "pasal",
     "person",
     "organization",
     "company",
@@ -44,10 +45,38 @@ ENTITY_EXTRACTION_PROMPT = """Extract named entities from the following text.
 
 RULES:
 1. Output ONLY valid JSON, no markdown, no explanation
-2. Extract entities of these types: person, organization, company, regulation, product, technology, country, location, date, project, concept, event, document, standard, process
+2. Extract entities of these types: pasal, person, organization, company, regulation, product, technology, country, location, date, project, concept, event, document, standard, process
 3. Normalize entity names (e.g., "Bank Indonesia" not "bank indonesia")
 4. Include confidence score (0.0-1.0) for each entity
 5. Do not include generic terms or pronouns
+
+OUTPUT FORMAT:
+{{
+  "entities": [
+    {{"name": "Entity Name", "type": "entity_type", "confidence": 0.95}}
+  ]
+}}
+
+TEXT:
+{text}
+
+JSON:"""
+
+# Prompt used when the document's regulation title is known — adds pasal extraction rules
+ENTITY_EXTRACTION_PROMPT_WITH_PASAL = """Extract named entities from the following text.
+
+CURRENT DOCUMENT: {document_title}
+
+RULES:
+1. Output ONLY valid JSON, no markdown, no explanation
+2. Extract entities of these types: pasal, person, organization, company, regulation, product, technology, country, location, date, project, concept, event, document, standard, process
+3. For PASAL entities (articles/sections in Indonesian regulations):
+   - Pasal that belongs to THIS document → name it "Pasal [number] {document_title}" (e.g. "Pasal 5 {document_title}")
+   - Pasal cited from ANOTHER regulation → use the citation as written in text (e.g. "Pasal 12 PP No. 71/2019")
+   - Include ayat if specified, e.g. "Pasal 5 ayat (2) {document_title}"
+4. Normalize other entity names (e.g., "Bank Indonesia" not "bank indonesia")
+5. Include confidence score (0.0-1.0) for each entity
+6. Do not include generic terms or pronouns
 
 OUTPUT FORMAT:
 {{
@@ -100,6 +129,7 @@ class EntityExtractionService:
         self,
         text: str,
         max_entities: int = 50,
+        document_title: Optional[str] = None,
     ) -> list[ExtractedEntity]:
         """
         Extract entities from text using LLM.
@@ -107,6 +137,8 @@ class EntityExtractionService:
         Args:
             text: Text to extract entities from
             max_entities: Maximum number of entities to extract
+            document_title: Regulation title (e.g. "UU No. 11/2020") used
+                to name pasal entities from the current document correctly.
 
         Returns:
             List of extracted entities
@@ -118,7 +150,13 @@ class EntityExtractionService:
         if len(text) > 4000:
             text = text[:4000] + "..."
 
-        prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
+        if document_title:
+            prompt = ENTITY_EXTRACTION_PROMPT_WITH_PASAL.format(
+                document_title=document_title,
+                text=text,
+            )
+        else:
+            prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
 
         try:
             log(f"Extracting entities from {len(text)} chars using {self.model}...")
@@ -238,6 +276,9 @@ class EntityExtractionService:
     def _match_entity_type(self, entity_type: str) -> Optional[str]:
         """Try to match an invalid entity type to a valid one."""
         type_mappings = {
+            "article": "pasal",
+            "section": "pasal",
+            "ayat": "pasal",
             "org": "organization",
             "corp": "company",
             "firm": "company",

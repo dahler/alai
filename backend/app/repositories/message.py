@@ -42,10 +42,11 @@ class MessageRepository(BaseRepository[Message]):
         return list(result.scalars().all())
 
     async def add_message(
-        self, conversation_id: int, role: str, content: str
+        self, conversation_id: int, role: str, content: str, sources: list | None = None
     ) -> Message:
         return await self.create(
             conversation_id=conversation_id,
             role=role,
-            content=content
+            content=content,
+            sources=sources,
         )

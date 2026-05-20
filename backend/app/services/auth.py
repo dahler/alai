@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import secrets
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
 import httpx
@@ -10,6 +13,14 @@ from app.repositories.user import UserRepository
 from app.repositories.conversation import ConversationRepository
 from app.models.user import User
 from app.schemas.auth import Token, MicrosoftUserInfo
+
+
+def _generate_pkce() -> tuple[str, str]:
+    """Return (code_verifier, code_challenge) for PKCE."""
+    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return code_verifier, code_challenge
 
 
 class AuthService:
@@ -40,20 +51,25 @@ class AuthService:
             return None
 
     def get_microsoft_auth_url(self, state: str | None = None) -> str:
+        code_verifier, code_challenge = _generate_pkce()
+        # Embed verifier in state so callback can retrieve it without server-side storage
+        combined_state = f"{state or ''}|{code_verifier}"
+
         params = {
             "client_id": settings.MICROSOFT_CLIENT_ID,
             "response_type": "code",
             "redirect_uri": settings.MICROSOFT_REDIRECT_URI,
             "scope": "openid profile email User.Read",
             "response_mode": "query",
+            "state": combined_state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         }
-        if state:
-            params["state"] = state
 
         base_url = f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/authorize"
         return f"{base_url}?{urlencode(params)}"
 
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def exchange_code_for_token(self, code: str, code_verifier: str) -> dict:
         token_url = f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/token"
 
         data = {
@@ -62,10 +78,15 @@ class AuthService:
             "code": code,
             "redirect_uri": settings.MICROSOFT_REDIRECT_URI,
             "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
         }
+
+        print(f"[AUTH] Token exchange → redirect_uri={settings.MICROSOFT_REDIRECT_URI} verifier_len={len(code_verifier)}", flush=True)
 
         async with httpx.AsyncClient() as client:
             response = await client.post(token_url, data=data)
+            if not response.is_success:
+                print(f"[AUTH] Token exchange {response.status_code}: {response.text}", flush=True)
             response.raise_for_status()
             return response.json()
 
@@ -80,10 +101,25 @@ class AuthService:
             return MicrosoftUserInfo(**data)
 
     async def authenticate_microsoft(
-        self, code: str, anonymous_session_id: str | None = None
+        self, code: str, state: str | None = None
     ) -> tuple[User, Token]:
-        # Exchange code for Microsoft token
-        token_data = await self.exchange_code_for_token(code)
+        # Extract session_id and code_verifier from combined state
+        anonymous_session_id = None
+        code_verifier = ""
+        if state and "|" in state:
+            parts = state.split("|", 1)
+            anonymous_session_id = parts[0] or None
+            code_verifier = parts[1]
+        elif state:
+            anonymous_session_id = state
+
+        print(f"[AUTH] state raw   : {state!r}", flush=True)
+        print(f"[AUTH] session_id  : {anonymous_session_id!r}", flush=True)
+        print(f"[AUTH] verifier_len: {len(code_verifier)} chars", flush=True)
+        print(f"[AUTH] code        : {code[:20]}...", flush=True)
+
+        # Exchange code for Microsoft token (with PKCE verifier)
+        token_data = await self.exchange_code_for_token(code, code_verifier)
         ms_access_token = token_data.get("access_token")
 
         # Get user info from Microsoft

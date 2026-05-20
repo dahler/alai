@@ -119,38 +119,48 @@ class AgentLoop:
         self.trace: Optional[AgentTrace] = None
 
     def _log(self, message: str):
-        """Log message if verbose mode is enabled."""
         if self.verbose:
             timestamp = time.strftime("%H:%M:%S")
-            print(f"[{timestamp}] [AGENT] {message}")
+            print(f"[{timestamp}] [AGENT] {message}", flush=True)
 
-    async def _detect_required_tool(self, task: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    async def _detect_required_tool(self, task: str) -> Optional[List[Tuple[str, Dict[str, Any]]]]:
         """
-        Use LLM to intelligently detect which tool is required for the task.
-        Returns tool name and parameters, or None for direct answer queries.
+        Use LLM to detect which tool(s) are required for the task.
+        Returns list of (tool_name, parameters) tuples, or None for direct answer queries.
+        Supports multi-tool detection in a single LLM call.
         """
-        self._log("Using LLM to determine required tool...")
+        self._log("Using LLM for multi-tool detection...")
 
-        tool_detection_prompt = f"""You are a tool selector. Analyze the user's request and decide which tool to use.
+        tool_detection_prompt = f"""You are a tool selector. Analyze the user's request and decide which tool(s) to use. You may select MULTIPLE tools when the query needs combined data.
 
 Available tools:
 1. rag_search - Search uploaded documents, files, PDFs, company SOPs, knowledge base, manuals
 2. web_search - Search the internet for current news, weather, prices, latest information, real-time data
-3. calculator - Perform mathematical calculations
-4. get_current_time - Get current time/date
-5. read_url - Read content from a specific URL
-6. none - No tool needed, can answer directly from knowledge
+3. yahoo_finance - Get stock/currency data (prices, history, financials, exchange rates). Use symbol=IDR=X for USD/IDR, symbol=^JKSE for IHSG index
+4. calculator - Perform mathematical calculations
+5. get_current_time - Get current time/date
+6. read_url - Read content from a specific URL
+
+When to use multiple tools:
+- Currency/forex queries needing current rate AND news/analysis → yahoo_finance + web_search
+- Stock market overview needing index data AND news → yahoo_finance + web_search
+- Research needing both uploaded docs AND web context → rag_search + web_search
 
 User request: "{task}"
 
 Respond with ONLY a JSON object (no markdown, no explanation):
-{{"tool": "<tool_name>", "params": {{"key": "value"}}, "reason": "<brief reason>"}}
+{{"tools": [{{"tool": "<name>", "params": {{...}}}}], "reason": "<brief reason>"}}
+
+If no tool needed: {{"tools": [], "reason": "general knowledge"}}
 
 Examples:
-- "What's in my company SOP about leave policy?" → {{"tool": "rag_search", "params": {{"query": "leave policy", "top_k": 5}}, "reason": "searching uploaded documents"}}
-- "What's the latest news about AI?" → {{"tool": "web_search", "params": {{"query": "latest AI news 2024", "num_results": 5}}, "reason": "need current information"}}
-- "Calculate 15% of 250" → {{"tool": "calculator", "params": {{"expression": "0.15 * 250"}}, "reason": "math calculation"}}
-- "What is Python?" → {{"tool": "none", "params": {{}}, "reason": "general knowledge question"}}
+- "Kurs rupiah terbaru dan beritanya?" → {{"tools": [{{"tool": "yahoo_finance", "params": {{"symbol": "IDR=X", "action": "quote"}}}}, {{"tool": "web_search", "params": {{"query": "kurs rupiah terbaru berita", "num_results": 5}}}}], "reason": "currency rate and news"}}
+- "IHSG performance this week?" → {{"tools": [{{"tool": "yahoo_finance", "params": {{"symbol": "^JKSE", "action": "history", "period": "5d"}}}}, {{"tool": "web_search", "params": {{"query": "IHSG performance this week", "num_results": 5}}}}], "reason": "index data and news"}}
+- "What's AAPL stock price?" → {{"tools": [{{"tool": "yahoo_finance", "params": {{"symbol": "AAPL", "action": "quote"}}}}], "reason": "single stock price"}}
+- "What's in my company SOP about leave?" → {{"tools": [{{"tool": "rag_search", "params": {{"query": "leave policy", "top_k": 5}}}}], "reason": "document search"}}
+- "Latest AI news?" → {{"tools": [{{"tool": "web_search", "params": {{"query": "latest AI news", "num_results": 5}}}}], "reason": "current information"}}
+- "Calculate 15% of 250" → {{"tools": [{{"tool": "calculator", "params": {{"expression": "0.15 * 250"}}}}], "reason": "math"}}
+- "What is Python?" → {{"tools": [], "reason": "general knowledge"}}
 
 JSON:"""
 
@@ -158,53 +168,113 @@ JSON:"""
             messages = [{"role": "user", "content": tool_detection_prompt}]
             response = await self.ai_service.generate_response(messages, use_agent_model=True)
 
-            # Parse the JSON response
             cleaned = response.strip()
+            self._log(f"LLM tool detection raw response: {cleaned[:300]}")
 
-            # Try to extract JSON from the response
-            json_match = re.search(r'\{[^{}]*\}', cleaned)
+            # Extract JSON — use greedy dotall to capture nested objects
+            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
             if json_match:
                 parsed = json.loads(json_match.group())
+
+                # New multi-tool format: {"tools": [...], "reason": "..."}
+                if "tools" in parsed:
+                    tools_list = parsed.get("tools", [])
+                    reason = parsed.get("reason", "")
+                    self._log(f"LLM detected {len(tools_list)} tool(s) | Reason: {reason}")
+
+                    if not tools_list:
+                        return None
+
+                    result = []
+                    for entry in tools_list:
+                        tool_name = entry.get("tool", "").lower().strip()
+                        params = entry.get("params", {})
+                        if not tool_name or tool_name == "none":
+                            continue
+                        if not tool_registry.get(tool_name):
+                            self._log(f"Unknown tool '{tool_name}', skipping")
+                            continue
+                        params = self._ensure_tool_params(tool_name, params, task)
+                        result.append((tool_name, params))
+
+                    return result if result else None
+
+                # Legacy single-tool format: {"tool": "...", "params": {...}}
                 tool_name = parsed.get("tool", "none").lower().strip()
                 params = parsed.get("params", {})
                 reason = parsed.get("reason", "")
-
-                self._log(f"LLM selected tool: {tool_name} | Reason: {reason}")
+                self._log(f"LLM detected tool: {tool_name} | Reason: {reason}")
 
                 if tool_name == "none":
                     return None
 
-                # Validate tool exists
                 if not tool_registry.get(tool_name):
                     self._log(f"Unknown tool '{tool_name}', falling back to web_search")
-                    return ("web_search", {"query": task, "num_results": 5})
+                    return [("web_search", {"query": task, "num_results": 5})]
 
-                # Ensure required params exist
-                if tool_name == "rag_search" and "query" not in params:
-                    params["query"] = task
-                    params["top_k"] = params.get("top_k", 5)
-                elif tool_name == "web_search" and "query" not in params:
-                    params["query"] = task
-                    params["num_results"] = params.get("num_results", 5)
-                elif tool_name == "calculator" and "expression" not in params:
-                    # Try to extract expression from task
-                    expr_match = re.search(r'[\d\+\-\*\/\(\)\^\.\s%]+', task)
-                    if expr_match:
-                        params["expression"] = expr_match.group().strip()
-                    else:
-                        params["expression"] = task
-
-                return (tool_name, params)
+                params = self._ensure_tool_params(tool_name, params, task)
+                return [(tool_name, params)]
 
         except Exception as e:
-            self._log(f"LLM tool detection failed: {e}, using fallback")
+            self._log(f"✗ LLM tool detection EXCEPTION: {e}")
 
-        # Fallback to simple keyword detection if LLM fails
-        return self._fallback_detect_tool(task)
+        fallback = self._fallback_detect_tool(task)
+        self._log(f"Fallback tool detection result: {fallback}")
+        return fallback
 
-    def _fallback_detect_tool(self, task: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    def _ensure_tool_params(self, tool_name: str, params: Dict[str, Any], task: str) -> Dict[str, Any]:
+        """Fill in missing required parameters for a tool."""
+        if tool_name == "rag_search" and "query" not in params:
+            params["query"] = task
+            params.setdefault("top_k", 5)
+        elif tool_name == "web_search" and "query" not in params:
+            params["query"] = task
+            params.setdefault("num_results", 5)
+        elif tool_name == "yahoo_finance" and "symbol" not in params:
+            symbol_match = re.search(r'\b([A-Z]{1,5}(?:\.[A-Z]{2})?)\b', task.upper())
+            if symbol_match:
+                params["symbol"] = symbol_match.group(1)
+            params.setdefault("action", "quote")
+        elif tool_name == "calculator" and "expression" not in params:
+            expr_match = re.search(r'[\d\+\-\*\/\(\)\^\.\s%]+', task)
+            params["expression"] = expr_match.group().strip() if expr_match else task
+        return params
+
+    def _fallback_detect_tool(self, task: str) -> Optional[List[Tuple[str, Dict[str, Any]]]]:
         """Fallback keyword-based tool detection if LLM detection fails."""
         task_lower = task.lower()
+
+        # Currency patterns - need both exchange rate AND web context
+        currency_keywords = [
+            "rupiah", "idr", "dollar", "usd", "kurs", "nilai tukar", "exchange rate",
+            "mata uang", "currency", "forex", "valas"
+        ]
+        info_keywords = [
+            "news", "berita", "terbaru", "latest", "update", "analisa", "analysis",
+            "harga", "berapa", "saat ini", "hari ini", "sekarang", "current", "today", "now", "price", "rate"
+        ]
+
+        if any(ck in task_lower for ck in currency_keywords) and any(ik in task_lower for ik in info_keywords):
+            return [
+                ("yahoo_finance", {"symbol": "IDR=X", "action": "quote"}),
+                ("web_search", {"query": task, "num_results": 5}),
+            ]
+
+        # Indonesian stock market patterns - need both IHSG data AND web analysis
+        indo_stock_keywords = [
+            "ihsg", "idx", "bursa indonesia", "pasar indonesia", "saham indonesia",
+            "stock indonesia", "bei", "bursa efek", "indonesian stock", "indonesian market"
+        ]
+        stock_action_keywords = [
+            "terbaik", "best", "top", "teratas", "naik", "turun", "gain", "loss",
+            "minggu", "week", "bulan", "month", "hari", "day", "performance", "performa"
+        ]
+
+        if any(ik in task_lower for ik in indo_stock_keywords) and any(sk in task_lower for sk in stock_action_keywords):
+            return [
+                ("yahoo_finance", {"symbol": "^JKSE", "action": "history", "period": "1mo"}),
+                ("web_search", {"query": task, "num_results": 5}),
+            ]
 
         # RAG patterns (English + Indonesian)
         rag_keywords = [
@@ -212,20 +282,42 @@ JSON:"""
             "dokumen", "berkas", "file saya", "perusahaan", "panduan", "buku pegangan"
         ]
         if any(kw in task_lower for kw in rag_keywords):
-            return ("rag_search", {"query": task, "top_k": 5})
+            return [("rag_search", {"query": task, "top_k": 5})]
+
+        # Yahoo Finance patterns (stock-specific queries)
+        # Check for stock symbols (uppercase letters, optionally with .JK, .HK, etc.)
+        stock_symbol_match = re.search(r'\b([A-Z]{1,5}(?:\.[A-Z]{2})?)\b', task.upper())
+        stock_keywords = [
+            "stock price", "share price", "stock quote", "ticker", "market cap",
+            "pe ratio", "dividend", "financials", "earnings",
+            "harga saham", "ihsg", "idx", "bursa"
+        ]
+        if stock_symbol_match and any(kw in task_lower for kw in stock_keywords):
+            symbol = stock_symbol_match.group(1)
+            # Determine action based on keywords
+            action = "quote"
+            if any(kw in task_lower for kw in ["history", "historical", "chart", "grafik", "historis"]):
+                action = "history"
+            elif any(kw in task_lower for kw in ["info", "about", "company", "tentang"]):
+                action = "info"
+            elif any(kw in task_lower for kw in ["financial", "revenue", "income", "keuangan", "pendapatan"]):
+                action = "financials"
+            elif any(kw in task_lower for kw in ["news", "berita"]):
+                action = "news"
+            return [("yahoo_finance", {"symbol": symbol, "action": action})]
 
         # Web search patterns (English + Indonesian)
         web_keywords = [
-            "search", "latest", "news", "current", "today", "weather", "price", "stock",
-            "cari", "terbaru", "berita", "sekarang", "hari ini", "cuaca", "harga", "saham",
+            "search", "latest", "news", "current", "today", "weather", "price",
+            "cari", "terbaru", "berita", "sekarang", "hari ini", "cuaca", "harga",
             "lihat web", "temukan", "cek", "update"
         ]
         if any(kw in task_lower for kw in web_keywords):
-            return ("web_search", {"query": task, "num_results": 5})
+            return [("web_search", {"query": task, "num_results": 5})]
 
         # Time patterns (English + Indonesian)
         if any(word in task_lower for word in ["time", "what time", "current time", "jam berapa", "waktu sekarang"]):
-            return ("get_current_time", {"timezone": "Asia/Jakarta"})
+            return [("get_current_time", {"timezone": "Asia/Jakarta"})]
 
         return None
 
@@ -255,53 +347,92 @@ JSON:"""
         self.trace = AgentTrace(task=task)
         self.state = AgentState.THINKING
 
-        self._log(f"Starting task: {task[:100]}...")
+        self._log("=" * 60)
+        self._log("AGENT RUN STARTED")
+        self._log(f"TASK: {task[:120]}")
+        self._log("=" * 60)
 
-        # FORCED TOOL CALL: Use LLM to detect if we should auto-execute a tool first
-        forced_tool = await self._detect_required_tool(task)
-        initial_observation = None
+        # FORCED TOOL CALL: Use LLM to detect if we should auto-execute tool(s) first
+        forced_tools = await self._detect_required_tool(task)
+        initial_observations = []
 
-        if forced_tool:
-            tool_name, tool_params = forced_tool
-            self._log(f"FORCED TOOL CALL: {tool_name} with {tool_params}")
+        if not forced_tools:
+            self._log("⚠ NO TOOLS DETECTED — falling back to ReAct loop")
 
-            # Yield thought about using the tool
-            yield {"type": "thought", "content": f"I need to use {tool_name} to get current information for this task."}
+        if forced_tools:
+            tool_names = [t[0] for t in forced_tools]
+            self._log("=" * 50)
+            self._log(f"TOOLS DETECTED : {len(forced_tools)}")
+            for i, (tn, _) in enumerate(forced_tools, 1):
+                self._log(f"  [{i}] {tn}")
+            self._log("=" * 50)
 
-            # Yield action
-            yield {"type": "action", "tool": tool_name, "input": tool_params}
+            if len(forced_tools) > 1:
+                yield {"type": "thought", "content": f"I need to use multiple tools ({', '.join(tool_names)}) to get comprehensive information for this task."}
+            else:
+                yield {"type": "thought", "content": f"I need to use {tool_names[0]} to get current information for this task."}
 
-            # Execute the tool
-            result = await self.executor.execute(tool_name, tool_params)
-            initial_observation = result.to_observation()
+            # Execute all tools
+            for idx, (tool_name, tool_params) in enumerate(forced_tools):
+                self._log(f"RUNNING TOOL [{idx+1}/{len(forced_tools)}]: {tool_name}")
 
-            self._log(f"FORCED TOOL RESULT: {initial_observation[:200]}...")
-            yield {"type": "observation", "result": initial_observation, "status": result.status.value}
+                # Yield action
+                yield {"type": "action", "tool": tool_name, "input": tool_params}
 
-            # Track sources
-            if result.status == ExecutionStatus.SUCCESS:
-                if tool_name == "web_search" and isinstance(result.result, dict):
-                    for r in result.result.get("results", []):
-                        if "url" in r:
-                            self.trace.sources.append(r["url"])
+                # Execute the tool
+                result = await self.executor.execute(tool_name, tool_params)
+                observation = result.to_observation()
+                initial_observations.append(f"[{tool_name}]\n{observation}")
 
-            # Record the step
-            step = AgentStep(
-                step_number=1,
-                state=AgentState.OBSERVING,
-                thought=f"Using {tool_name} to get information",
-                action=tool_name,
-                action_input=tool_params,
-                observation=initial_observation,
-            )
-            self.trace.steps.append(step)
+                self._log(f"TOOL [{idx+1}] DONE: status={result.status.value}")
+                yield {"type": "observation", "result": observation, "status": result.status.value}
+
+                # Track sources as structured dicts for citation rendering
+                if result.status == ExecutionStatus.SUCCESS:
+                    if tool_name == "web_search" and isinstance(result.result, dict):
+                        for r in result.result.get("results", []):
+                            if r.get("url") and not any(
+                                isinstance(s, dict) and s.get("url") == r["url"]
+                                for s in self.trace.sources
+                            ):
+                                self.trace.sources.append({
+                                    "type": "web",
+                                    "title": r.get("title") or r["url"],
+                                    "url": r["url"],
+                                })
+                    elif tool_name == "rag_search" and isinstance(result.result, dict):
+                        for r in result.result.get("results", []):
+                            if r.get("source") and not any(
+                                isinstance(s, dict) and s.get("name") == r["source"]
+                                for s in self.trace.sources
+                            ):
+                                self.trace.sources.append({
+                                    "type": "doc",
+                                    "name": r["source"],
+                                })
+
+                # Record the step
+                step = AgentStep(
+                    step_number=idx + 1,
+                    state=AgentState.OBSERVING,
+                    thought=f"Using {tool_name} to get information",
+                    action=tool_name,
+                    action_input=tool_params,
+                    observation=observation,
+                )
+                self.trace.steps.append(step)
+
+        # Combine all observations
+        initial_observation = "\n\n".join(initial_observations) if initial_observations else None
 
         # Build messages for LLM
         system_prompt = """You are ALAI, a helpful AI assistant. You have access to real-time information through tools.
 
 When given search results or tool outputs, summarize the information clearly and helpfully.
 Always cite your sources when providing information from search results.
-Be concise but thorough in your responses."""
+Be concise but thorough in your responses.
+
+IMPORTANT: Always respond in the SAME LANGUAGE as the user's question. If the user asks in Bahasa Indonesia, respond in Bahasa Indonesia. If the user asks in English, respond in English."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -312,13 +443,31 @@ Be concise but thorough in your responses."""
 
         # Build the task message with tool results if we have them
         if initial_observation:
+            # Build numbered reference list so the LLM can use inline citations
+            citation_lines = []
+            for i, src in enumerate(self.trace.sources, 1):
+                if isinstance(src, dict):
+                    if src["type"] == "web":
+                        citation_lines.append(f"[{i}] {src['title']} — {src['url']}")
+                    else:
+                        citation_lines.append(f"[{i}] Document: {src['name']}")
+                else:
+                    citation_lines.append(f"[{i}] {src}")
+
+            citations_block = (
+                "\n\nSources (use [1], [2], etc. inline):\n" + "\n".join(citation_lines)
+                if citation_lines else ""
+            )
+
             task_message = f"""User's question: {task}
 
-I searched and found this information:
+Retrieved information:
+{initial_observation}{citations_block}
 
-{initial_observation}
-
-Based on these search results, please provide a helpful answer to the user's question. Cite the sources."""
+Instructions:
+- Answer the user's question using ONLY the retrieved information above.
+- When you state a fact, add an inline citation like [1] or [2] referencing the source number above.
+- Respond in the same language as the user's question."""
         else:
             # No forced tool - use original ReAct approach
             format_instructions = get_react_format_instructions()
@@ -440,7 +589,7 @@ Action Input: {"query": "your search query here"}""",
                 step.state = AgentState.ACTING
                 tools_used += 1
 
-                self._log(f"Action: {action}")
+                self._log(f"RUNNING TOOL: {action}")
                 yield {"type": "action", "tool": action, "input": action_input}
 
                 # Execute the tool
@@ -450,19 +599,29 @@ Action Input: {"query": "your search query here"}""",
                 observation = result.to_observation()
                 step.observation = observation
 
-                self._log(f"Observation: {observation[:200]}...")
+                self._log(f"TOOL DONE: status={result.status.value}")
                 yield {"type": "observation", "result": observation, "status": result.status.value}
 
                 # Track sources
                 if result.status == ExecutionStatus.SUCCESS:
                     if action == "rag_search" and isinstance(result.result, dict):
                         for r in result.result.get("results", []):
-                            if "source" in r:
-                                self.trace.sources.append(r["source"])
+                            if r.get("source") and not any(
+                                isinstance(s, dict) and s.get("name") == r["source"]
+                                for s in self.trace.sources
+                            ):
+                                self.trace.sources.append({"type": "doc", "name": r["source"]})
                     elif action == "web_search" and isinstance(result.result, dict):
                         for r in result.result.get("results", []):
-                            if "url" in r:
-                                self.trace.sources.append(r["url"])
+                            if r.get("url") and not any(
+                                isinstance(s, dict) and s.get("url") == r["url"]
+                                for s in self.trace.sources
+                            ):
+                                self.trace.sources.append({
+                                    "type": "web",
+                                    "title": r.get("title") or r["url"],
+                                    "url": r["url"],
+                                })
 
                 # Add to messages for next iteration
                 messages.append({"role": "assistant", "content": response})
@@ -599,26 +758,32 @@ Try again with the correct format.""",
         self,
         task: str,
         context: Optional[List[Dict[str, str]]] = None,
+        show_steps: bool = False,
     ) -> AsyncGenerator[str, None]:
         """
         Run agent with streaming output for real-time display.
+
+        Args:
+            task: The task/question to solve
+            context: Optional conversation context
+            show_steps: If True, show thinking/tool steps. If False, only show final answer.
 
         Yields formatted strings suitable for SSE streaming.
         """
         async for event in self.run(task, context):
             event_type = event.get("type")
 
-            if event_type == "thought":
+            if event_type == "thought" and show_steps:
                 yield f"🤔 **Thinking:** {event['content']}\n\n"
 
-            elif event_type == "action":
+            elif event_type == "action" and show_steps:
                 tool = event.get("tool")
                 tool_input = event.get("input", {})
                 yield f"🔧 **Using tool:** `{tool}`\n"
                 if tool_input:
                     yield f"```json\n{json.dumps(tool_input, indent=2)}\n```\n\n"
 
-            elif event_type == "observation":
+            elif event_type == "observation" and show_steps:
                 result = event.get("result", "")
                 status = event.get("status", "")
                 if status == "success":
@@ -629,11 +794,20 @@ Try again with the correct format.""",
             elif event_type == "final_answer":
                 content = event.get("content", "")
                 sources = event.get("sources", [])
-                yield f"\n---\n\n{content}"
+                yield content
                 if sources:
-                    yield f"\n\n**Sources:**\n"
-                    for source in sources[:5]:
-                        yield f"- {source}\n"
+                    yield "\n\n---\n\n**Sources:**\n"
+                    for i, src in enumerate(sources[:10], 1):
+                        if isinstance(src, dict):
+                            if src["type"] == "web":
+                                title = src.get("title") or src["url"]
+                                yield f"[{i}] [{title}]({src['url']})\n"
+                            else:
+                                yield f"[{i}] 📄 {src['name']}\n"
+                        elif str(src).startswith("http"):
+                            yield f"[{i}] {src}\n"
+                        else:
+                            yield f"[{i}] 📄 {src}\n"
 
             elif event_type == "error":
                 yield f"\n❌ **Error:** {event.get('message')}\n"

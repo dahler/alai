@@ -182,6 +182,52 @@ async def get_graph_stats(
     return GraphStatsResponse(**stats)
 
 
+@router.get("/overview")
+async def get_graph_overview(
+    limit: int = Query(default=100, ge=10, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return top N entities by mention count + all relationships between them."""
+    from sqlalchemy import select
+    from app.models.entity import Entity
+    from app.models.relationship import EntityRelationship
+
+    result = await db.execute(
+        select(Entity).order_by(Entity.mention_count.desc()).limit(limit)
+    )
+    entities = result.scalars().all()
+    entity_ids = {e.id for e in entities}
+
+    rels_result = await db.execute(
+        select(EntityRelationship).where(
+            EntityRelationship.source_entity_id.in_(entity_ids),
+            EntityRelationship.target_entity_id.in_(entity_ids),
+        )
+    )
+    relationships = rels_result.scalars().all()
+
+    return {
+        "nodes": [
+            {
+                "id": e.id,
+                "name": e.name,
+                "type": e.entity_type,
+                "mention_count": e.mention_count,
+            }
+            for e in entities
+        ],
+        "edges": [
+            {
+                "source_id": r.source_entity_id,
+                "relation": r.relation_type,
+                "target_id": r.target_entity_id,
+                "confidence": r.confidence,
+            }
+            for r in relationships
+        ],
+    }
+
+
 @router.get("/entities/search", response_model=EntitySearchResponse)
 async def search_entities(
     query: str = Query(..., min_length=1),

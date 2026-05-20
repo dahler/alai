@@ -3,7 +3,7 @@ Documents API router for RAG document management.
 Handles personal and company document uploads, listing, and deletion.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from typing import Optional
@@ -14,7 +14,7 @@ from app.models.user import User
 from app.models.attachment import Attachment
 from app.models.document_chunk import DocumentChunk
 from app.services.rag import RAGService
-from app.services.knowledge_graph import KnowledgeGraphService
+from app.services.knowledge_graph import KnowledgeGraphService, extract_graph_background
 from app.services.storage import StorageService
 from app.config import settings
 
@@ -49,6 +49,7 @@ async def list_documents(
 
 @router.post("/upload")
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     is_company_doc: bool = Form(False),
     extract_graph: bool = Form(True),
@@ -56,20 +57,9 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Upload and embed a document for RAG with optional knowledge graph extraction.
-
-    Parameters:
-    - is_company_doc: If true, document is accessible by all users (admin only)
-    - extract_graph: If true, extract entities and relationships for knowledge graph
+    Upload and embed a document for RAG.
+    Chunking and embedding run synchronously; graph extraction runs in the background.
     """
-    # Check admin permission for company docs
-    if is_company_doc and not user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can upload company documents",
-        )
-
-    # Validate file size
     content = await file.read()
     if len(content) > settings.MAX_FILE_SIZE:
         raise HTTPException(
@@ -78,25 +68,18 @@ async def upload_document(
         )
     await file.seek(0)
 
-    # Validate file type
     allowed_types = {
-        "application/pdf",
-        "text/plain",
-        "text/markdown",
-        "application/json",
-        "text/html",
-        "text/xml",
+        "application/pdf", "text/plain", "text/markdown",
+        "application/json", "text/html", "text/xml",
     }
     if file.content_type not in allowed_types and not file.content_type.startswith("text/"):
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"File type {file.content_type} is not supported for RAG. Supported: PDF, TXT, MD, JSON, HTML, XML",
+            detail=f"File type {file.content_type} is not supported for RAG.",
         )
 
-    # Save file
     file_info = await storage_service.save_file(file)
 
-    # Create attachment record
     attachment = Attachment(
         filename=file_info["filename"],
         original_filename=file_info["original_filename"],
@@ -105,22 +88,22 @@ async def upload_document(
         file_path=file_info["file_path"],
         user_id=user.id,
         is_company_doc=is_company_doc,
+        graph_status="pending" if extract_graph else None,
     )
     db.add(attachment)
     await db.commit()
     await db.refresh(attachment)
 
-    # Ingest document with Knowledge Graph (includes embeddings)
+    # Phase 1 (sync): extract text, chunk, embed, store chunks
     kg_service = KnowledgeGraphService(db)
     stats = await kg_service.ingest_document(
         attachment_id=attachment.id,
         user_id=user.id,
         is_company_doc=is_company_doc,
-        extract_graph=extract_graph,
+        extract_graph=False,
     )
 
     if "error" in stats:
-        # Clean up on failure
         storage_service.delete_file(attachment.filename)
         await db.delete(attachment)
         await db.commit()
@@ -129,22 +112,208 @@ async def upload_document(
             detail=f"Failed to process document: {stats['error']}",
         )
 
+    # Phase 2 (async): entity + graph extraction in background
+    if extract_graph:
+        background_tasks.add_task(extract_graph_background, attachment.id)
+
     return {
         "id": attachment.id,
         "filename": attachment.original_filename,
         "content_type": attachment.content_type,
         "file_size": attachment.file_size,
         "is_company_doc": is_company_doc,
-        "message": "Document uploaded and processed successfully",
+        "graph_status": attachment.graph_status,
+        "message": "Document uploaded. Knowledge graph extraction running in background."
+        if extract_graph else "Document uploaded and processed successfully.",
         "stats": {
             "chunks_created": stats["chunks_created"],
-            "entities_extracted": stats["entities_extracted"],
-            "entities_new": stats["entities_new"],
-            "entities_linked": stats["entities_linked"],
-            "relationships_created": stats["relationships_created"],
             "processing_time": round(stats["processing_time"], 2),
         },
     }
+
+
+@router.post("/upload-batch")
+async def upload_documents_batch(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    is_company_doc: bool = Form(False),
+    extract_graph: bool = Form(True),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload multiple documents at once.
+    Chunking/embedding runs synchronously per file; graph extraction is deferred to background.
+    """
+    allowed_types = {
+        "application/pdf", "text/plain", "text/markdown",
+        "application/json", "text/html", "text/xml",
+    }
+
+    results = []
+    graph_attachment_ids: list[int] = []
+
+    for file in files:
+        saved_filename: str | None = None
+        committed_attachment_id: int | None = None
+        try:
+            content = await file.read()
+            if len(content) > settings.MAX_FILE_SIZE:
+                results.append({
+                    "filename": file.filename,
+                    "status": "error",
+                    "error": f"File too large (max {settings.MAX_FILE_SIZE // (1024 * 1024)}MB)",
+                })
+                continue
+            await file.seek(0)
+
+            if file.content_type not in allowed_types and not (file.content_type or "").startswith("text/"):
+                results.append({
+                    "filename": file.filename,
+                    "status": "error",
+                    "error": f"Unsupported file type: {file.content_type}",
+                })
+                continue
+
+            file_info = await storage_service.save_file(file)
+            saved_filename = file_info["filename"]
+
+            attachment = Attachment(
+                filename=file_info["filename"],
+                original_filename=file_info["original_filename"],
+                content_type=file_info["content_type"],
+                file_size=file_info["file_size"],
+                file_path=file_info["file_path"],
+                user_id=user.id,
+                is_company_doc=is_company_doc,
+                graph_status="pending" if extract_graph else None,
+            )
+            db.add(attachment)
+            await db.commit()
+            await db.refresh(attachment)
+            committed_attachment_id = attachment.id
+
+            # Phase 1 (sync): chunks + embeddings only
+            kg_service = KnowledgeGraphService(db)
+            stats = await kg_service.ingest_document(
+                attachment_id=attachment.id,
+                user_id=user.id,
+                is_company_doc=is_company_doc,
+                extract_graph=False,
+            )
+
+            if "error" in stats:
+                storage_service.delete_file(saved_filename)
+                await db.delete(attachment)
+                await db.commit()
+                results.append({
+                    "filename": file.filename,
+                    "status": "error",
+                    "error": stats["error"],
+                })
+            else:
+                if extract_graph:
+                    graph_attachment_ids.append(attachment.id)
+                results.append({
+                    "filename": file.filename,
+                    "status": "success",
+                    "id": attachment.id,
+                    "file_size": attachment.file_size,
+                    "graph_status": attachment.graph_status,
+                    "stats": {
+                        "chunks_created": stats["chunks_created"],
+                        "processing_time": round(stats["processing_time"], 2),
+                    },
+                })
+        except Exception as e:
+            await db.rollback()
+
+            if saved_filename:
+                storage_service.delete_file(saved_filename)
+
+            if committed_attachment_id:
+                try:
+                    result = await db.execute(
+                        select(Attachment).where(Attachment.id == committed_attachment_id)
+                    )
+                    orphan = result.scalar_one_or_none()
+                    if orphan:
+                        await db.delete(orphan)
+                        await db.commit()
+                except Exception:
+                    pass
+
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "error": str(e),
+            })
+
+    # Schedule background graph extraction for all successful uploads
+    for att_id in graph_attachment_ids:
+        background_tasks.add_task(extract_graph_background, att_id)
+
+    succeeded = sum(1 for r in results if r["status"] == "success")
+    return {
+        "results": results,
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+    }
+
+
+@router.get("/{attachment_id}/graph-status")
+async def get_graph_status(
+    attachment_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll the graph extraction status for a document."""
+    result = await db.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    attachment = result.scalar_one_or_none()
+    if not attachment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    if attachment.user_id != user.id and not attachment.is_company_doc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    return {"id": attachment.id, "graph_status": attachment.graph_status}
+
+
+@router.post("/{attachment_id}/extract-graph")
+async def re_extract_graph(
+    attachment_id: int,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-trigger knowledge graph extraction for an already-embedded document."""
+    result = await db.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    attachment = result.scalar_one_or_none()
+    if not attachment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    if attachment.is_company_doc:
+        if not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can re-extract company documents")
+    else:
+        if attachment.user_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    if not attachment.is_embedded:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document must be embedded before graph extraction",
+        )
+
+    attachment.graph_status = "pending"
+    await db.commit()
+
+    background_tasks.add_task(extract_graph_background, attachment_id)
+
+    return {"id": attachment.id, "graph_status": "pending"}
 
 
 @router.delete("/{document_id}")

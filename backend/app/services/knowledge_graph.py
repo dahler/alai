@@ -3,6 +3,7 @@ Knowledge Graph Service - Main Orchestrator.
 Coordinates document ingestion, entity/relationship extraction, and graph construction.
 """
 
+import re
 import time
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,7 @@ from app.models.relationship import EntityRelationship
 from app.models.document_entity import DocumentEntity
 from app.models.document_chunk import DocumentChunk
 from app.models.attachment import Attachment
-from app.services.entity_extraction import EntityExtractionService, ExtractedEntity
+from app.services.entity_extraction import EntityExtractionService
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.graph_linking import GraphLinkingService
 from app.services.graph_retrieval import GraphRetrievalService, RetrievalResult
@@ -192,6 +193,56 @@ class KnowledgeGraphService:
 
         return stats
 
+    def _extract_regulation_title(self, chunks: list[str]) -> Optional[str]:
+        """
+        Derive a short regulation title from the first few chunks.
+
+        Tries common Indonesian regulation header patterns (UU, PP, Perpres,
+        Permen, POJK) and falls back to None so callers can use the filename.
+        """
+        search_text = " ".join(chunks[:3])[:3000]
+
+        patterns = [
+            (
+                r"UNDANG[\s-]+UNDANG\s+(?:REPUBLIK\s+INDONESIA\s+)?"
+                r"NOMOR\s+(\d+)\s+TAHUN\s+(\d{4})",
+                "UU No. {}/{}",
+            ),
+            (
+                r"PERATURAN\s+PEMERINTAH\s+(?:REPUBLIK\s+INDONESIA\s+)?"
+                r"NOMOR\s+(\d+)\s+TAHUN\s+(\d{4})",
+                "PP No. {}/{}",
+            ),
+            (
+                r"PERATURAN\s+PRESIDEN\s+(?:REPUBLIK\s+INDONESIA\s+)?"
+                r"NOMOR\s+(\d+)\s+TAHUN\s+(\d{4})",
+                "Perpres No. {}/{}",
+            ),
+            (
+                r"PERATURAN\s+OTORITAS\s+JASA\s+KEUANGAN\s+"
+                r"NOMOR\s+(\d+)(?:/\w+)*\s+(?:TAHUN\s+)?(\d{4})",
+                "POJK No. {}/{}",
+            ),
+            (
+                r"PERATURAN\s+MENTERI\s+(?:\w+\s+){0,5}"
+                r"NOMOR\s+(\d+)(?:/\w+)*\s+TAHUN\s+(\d{4})",
+                "Permen No. {}/{}",
+            ),
+            (r"\bUU\s+No\.?\s*(\d+)[/\s]+Tahun\s+(\d{4})", "UU No. {}/{}"),
+            (r"\bPP\s+No\.?\s*(\d+)[/\s]+Tahun\s+(\d{4})", "PP No. {}/{}"),
+            (r"\bUU\s+No\.?\s*(\d+)/(\d{4})\b", "UU No. {}/{}"),
+            (r"\bPP\s+No\.?\s*(\d+)/(\d{4})\b", "PP No. {}/{}"),
+        ]
+
+        for pattern, template in patterns:
+            match = re.search(pattern, search_text, re.IGNORECASE)
+            if match:
+                num = match.group(1).split("/")[0]
+                year = match.group(2)
+                return template.format(num, year)
+
+        return None
+
     async def _extract_and_link_graph(
         self,
         attachment_id: int,
@@ -200,6 +251,11 @@ class KnowledgeGraphService:
         stats: dict,
     ):
         """Extract entities and relationships, link to graph."""
+
+        # Derive regulation title so pasal entities are named correctly
+        doc_title = self._extract_regulation_title(chunks)
+        if doc_title:
+            log(f"Detected regulation title: {doc_title}")
 
         # Step 5: Extract entities
         log("-" * 40)
@@ -210,7 +266,9 @@ class KnowledgeGraphService:
 
         for i, chunk_text in enumerate(chunks):
             entities = await self.entity_extraction.extract_entities(
-                chunk_text, max_entities=15
+                chunk_text,
+                max_entities=15,
+                document_title=doc_title,
             )
             all_entities.extend(entities)
             chunk_entities_map[i] = entities
@@ -389,10 +447,14 @@ class KnowledgeGraphService:
         if not entity:
             return None
 
-        # Get outgoing relationships
+        # Get outgoing relationships + chunk evidence
         out_result = await self.db.execute(
-            select(EntityRelationship, Entity)
+            select(EntityRelationship, Entity, DocumentChunk)
             .join(Entity, EntityRelationship.target_entity_id == Entity.id)
+            .outerjoin(
+                DocumentChunk,
+                EntityRelationship.source_chunk_id == DocumentChunk.id,
+            )
             .where(EntityRelationship.source_entity_id == entity_id)
         )
         outgoing = [
@@ -403,14 +465,22 @@ class KnowledgeGraphService:
                 "target_name": target.name,
                 "target_type": target.entity_type,
                 "confidence": rel.confidence,
+                "context": rel.context,
+                "chunk_text": (
+                    chunk.chunk_text[:400] if chunk else None
+                ),
             }
-            for rel, target in out_result.all()
+            for rel, target, chunk in out_result.all()
         ]
 
-        # Get incoming relationships
+        # Get incoming relationships + chunk evidence
         in_result = await self.db.execute(
-            select(EntityRelationship, Entity)
+            select(EntityRelationship, Entity, DocumentChunk)
             .join(Entity, EntityRelationship.source_entity_id == Entity.id)
+            .outerjoin(
+                DocumentChunk,
+                EntityRelationship.source_chunk_id == DocumentChunk.id,
+            )
             .where(EntityRelationship.target_entity_id == entity_id)
         )
         incoming = [
@@ -421,8 +491,12 @@ class KnowledgeGraphService:
                 "source_type": source.entity_type,
                 "relation": rel.relation_type,
                 "confidence": rel.confidence,
+                "context": rel.context,
+                "chunk_text": (
+                    chunk.chunk_text[:400] if chunk else None
+                ),
             }
-            for rel, source in in_result.all()
+            for rel, source, chunk in in_result.all()
         ]
 
         # Get documents
@@ -538,6 +612,24 @@ class KnowledgeGraphService:
             "related_documents": related_docs,
         }
 
+    async def run_graph_extraction(self, attachment_id: int) -> dict:
+        """Run graph extraction on an already-embedded document's chunks."""
+        result = await self.db.execute(
+            select(DocumentChunk)
+            .where(DocumentChunk.attachment_id == attachment_id)
+            .order_by(DocumentChunk.chunk_index)
+        )
+        chunk_records = list(result.scalars().all())
+        chunks = [c.chunk_text for c in chunk_records]
+        stats: dict = {
+            "entities_extracted": 0, "entities_new": 0,
+            "entities_linked": 0, "relationships_extracted": 0,
+            "relationships_created": 0,
+        }
+        if chunks:
+            await self._extract_and_link_graph(attachment_id, chunks, chunk_records, stats)
+        return stats
+
     async def delete_document_graph(self, document_id: int) -> dict:
         """Delete graph data for a document."""
         # Delete document-entity links
@@ -563,3 +655,46 @@ class KnowledgeGraphService:
             "deleted_links": deleted_links,
             "deleted_relationships": deleted_rels,
         }
+
+
+async def extract_graph_background(attachment_id: int) -> None:
+    """
+    Standalone background task: extract entities and build graph for an already-embedded document.
+    Creates its own DB session so it can run after the request is done.
+    """
+    from app.database import async_session_maker
+
+    log(f"Background graph extraction starting for attachment {attachment_id}")
+
+    async with async_session_maker() as db:
+        try:
+            result = await db.execute(select(Attachment).where(Attachment.id == attachment_id))
+            attachment = result.scalar_one_or_none()
+            if not attachment:
+                log(f"Attachment {attachment_id} not found in background task")
+                return
+
+            attachment.graph_status = 'processing'
+            await db.commit()
+
+            service = KnowledgeGraphService(db)
+            stats = await service.run_graph_extraction(attachment_id)
+
+            attachment.graph_status = 'done' if stats.get('entities_extracted', 0) >= 0 else 'skipped'
+            await db.commit()
+
+            log(f"Background graph extraction DONE for attachment {attachment_id}: "
+                f"{stats.get('entities_extracted', 0)} entities, "
+                f"{stats.get('relationships_created', 0)} relationships")
+
+        except Exception as exc:
+            log(f"Background graph extraction FAILED for attachment {attachment_id}: {exc}")
+            try:
+                async with async_session_maker() as db2:
+                    result = await db2.execute(select(Attachment).where(Attachment.id == attachment_id))
+                    att = result.scalar_one_or_none()
+                    if att:
+                        att.graph_status = 'failed'
+                        await db2.commit()
+            except Exception:
+                pass

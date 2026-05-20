@@ -65,7 +65,7 @@ async def upload_file(
 
 
 @router.get("/{filename}")
-async def get_file(filename: str):
+async def get_file(filename: str, db: AsyncSession = Depends(get_db)):
     file_path = storage_service.get_file_path(filename)
 
     if not file_path.exists():
@@ -74,9 +74,16 @@ async def get_file(filename: str):
             detail="File not found",
         )
 
+    result = await db.execute(select(Attachment).where(Attachment.filename == filename))
+    attachment = result.scalar_one_or_none()
+
+    content_type = attachment.content_type if attachment else "application/octet-stream"
+    original_name = attachment.original_filename if attachment else filename
+
     return FileResponse(
         path=file_path,
-        filename=filename,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{original_name}"'},
     )
 
 

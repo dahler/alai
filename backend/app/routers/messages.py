@@ -211,28 +211,47 @@ async def send_message_stream(
 
         log(f"Summary: {len(image_paths)} image(s), {len(document_contents)} document(s)")
 
-    # Router classification
+    # Check if this user has any documents in their knowledge base
+    from app.models.document_chunk import DocumentChunk
+    from sqlalchemy import func as sql_func
+    kb_count_result = await db.execute(
+        select(sql_func.count()).select_from(DocumentChunk).where(
+            (DocumentChunk.user_id == user.id) | (DocumentChunk.is_company_doc == True)
+            if user else (DocumentChunk.is_company_doc == True)
+        )
+    )
+    has_knowledge_base = (kb_count_result.scalar() or 0) > 0
+
+    # Language detection + translation (translate → route in English → respond in original)
     log("-" * 60)
-    log("ROUTER CLASSIFICATION")
+    log("LANGUAGE DETECTION & ROUTING")
     log("-" * 60)
+    query_lang, english_query = await router_service.detect_and_translate(data.content)
+    if query_lang != "en":
+        log(f"Detected language: {query_lang} → translating for routing")
+    else:
+        log("Language: en (no translation needed)")
+
     router_result = await router_service.classify(
-        query=data.content,
+        query=english_query,
         has_attachments=len(data.attachment_ids) > 0,
         has_images=len(image_paths) > 0,
+        has_knowledge_base=has_knowledge_base,
     )
     log(f"Router decision: {router_result.action.value} ({router_result.confidence:.0%})")
 
     # RAG Search with Knowledge Graph if needed
     rag_context = ""
+    rag_sources: list[dict] = []  # [{number, filename, stored_filename, document_id}]
+
     if router_result.action == RouterAction.RAG_SEARCH:
         log("-" * 60)
         log("HYBRID RAG RETRIEVAL (Vector + Knowledge Graph)")
         log("-" * 60)
 
-        # Use Knowledge Graph hybrid search for better results
         kg_service = KnowledgeGraphService(db)
         hybrid_results = await kg_service.hybrid_search(
-            query=data.content,
+            query=data.content,  # use original language for semantic search
             user_id=user.id if user else None,
             top_k=5,
             vector_weight=0.6,
@@ -240,19 +259,34 @@ async def send_message_stream(
         )
 
         if hybrid_results:
+            # Build deduplicated source list (one entry per document)
+            seen_doc_ids: set[int] = set()
+            for r in hybrid_results:
+                if r.document_id not in seen_doc_ids:
+                    seen_doc_ids.add(r.document_id)
+                    rag_sources.append({
+                        "number": len(rag_sources) + 1,
+                        "filename": r.filename,
+                        "stored_filename": r.stored_filename,
+                        "document_id": r.document_id,
+                        "chunk_text": r.chunk_text,
+                    })
+
+            # Map document_id → source number for the prompt
+            doc_to_num = {s["document_id"]: s["number"] for s in rag_sources}
+
             rag_chunks = []
             for result in hybrid_results:
-                # Build context including graph information
-                chunk_info = f"[Source: {result.filename}"
+                src_num = doc_to_num[result.document_id]
+                chunk_info = f"[{src_num}] {result.filename}"
                 if result.source == "hybrid":
-                    chunk_info += f" | Vector: {result.vector_score:.0%}, Graph: {result.graph_score:.0%}"
+                    chunk_info += f" (vector {result.vector_score:.0%}, graph {result.graph_score:.0%})"
                 elif result.source == "vector":
-                    chunk_info += f" | Similarity: {result.vector_score:.0%}"
+                    chunk_info += f" (similarity {result.vector_score:.0%})"
                 else:
-                    chunk_info += f" | Graph score: {result.graph_score:.0%}"
-                chunk_info += "]\n"
+                    chunk_info += f" (graph score {result.graph_score:.0%})"
+                chunk_info += "\n"
 
-                # Add entity context if available
                 if result.matched_entities:
                     entities_str = ", ".join(
                         f"{e['name']} ({e['type']})"
@@ -260,7 +294,6 @@ async def send_message_stream(
                     )
                     chunk_info += f"Related entities: {entities_str}\n"
 
-                # Add relationship context if available
                 if result.relationships:
                     rels_str = "; ".join(
                         f"{r.get('source_name', 'Entity')} {r['relation']} {r.get('target_name', 'Entity')}"
@@ -272,7 +305,7 @@ async def send_message_stream(
                 rag_chunks.append(chunk_info)
 
             rag_context = "\n\n---\n\n".join(rag_chunks)
-            log(f"✓ Retrieved {len(hybrid_results)} relevant chunks via hybrid search")
+            log(f"✓ Retrieved {len(hybrid_results)} chunks from {len(rag_sources)} document(s)")
             log(f"  Sources: {sum(1 for r in hybrid_results if r.source == 'vector')} vector, "
                 f"{sum(1 for r in hybrid_results if r.source == 'graph')} graph, "
                 f"{sum(1 for r in hybrid_results if r.source == 'hybrid')} hybrid")
@@ -286,13 +319,28 @@ async def send_message_stream(
                 top_k=5,
             )
             if rag_results:
+                seen_doc_ids_fb: set[int] = set()
+                for r in rag_results:
+                    doc_id = r.get("document_id") or r.get("attachment_id", 0)
+                    if doc_id and doc_id not in seen_doc_ids_fb:
+                        seen_doc_ids_fb.add(doc_id)
+                        rag_sources.append({
+                            "number": len(rag_sources) + 1,
+                            "filename": r["filename"],
+                            "stored_filename": r.get("stored_filename", ""),
+                            "document_id": doc_id,
+                            "chunk_text": r.get("chunk_text", ""),
+                        })
+                doc_to_num_fb = {s["document_id"]: s["number"] for s in rag_sources}
                 rag_chunks = []
                 for result in rag_results:
+                    doc_id = result.get("document_id") or result.get("attachment_id", 0)
+                    num = doc_to_num_fb.get(doc_id, "?")
                     rag_chunks.append(
-                        f"[Source: {result['filename']} (similarity: {result['similarity']:.0%})]\n{result['chunk_text']}"
+                        f"[{num}] {result['filename']} (similarity {result['similarity']:.0%})\n{result['chunk_text']}"
                     )
                 rag_context = "\n\n---\n\n".join(rag_chunks)
-                log(f"✓ Retrieved {len(rag_results)} relevant chunks (vector only)")
+                log(f"✓ Retrieved {len(rag_results)} chunks (vector only)")
             else:
                 log("⚠ No relevant documents found")
 
@@ -315,15 +363,20 @@ async def send_message_stream(
 
     # Add RAG context if available
     if rag_context:
+        source_list = "\n".join(f"[{s['number']}] {s['filename']}" for s in rag_sources)
         user_message = f"""The following information was retrieved from the knowledge base:
 
+Sources:
+{source_list}
+
+Retrieved content:
 {rag_context}
 
 ---
 
 User's question: {data.content}
 
-Please answer based on the retrieved information above. If the information doesn't fully answer the question, say so."""
+Instructions: Answer based on the retrieved content above. When you use information from a source, cite it inline using its number, e.g. [1] or [2]. If the information doesn't fully answer the question, say so."""
         log(f"Enhanced message with RAG context ({len(user_message)} total chars)")
 
     # Add directly attached document content (for newly uploaded docs)
@@ -342,6 +395,19 @@ User's request: {data.content}"""
         log("STARTING AGENTIC MODE")
         log("-" * 60)
 
+        # Build the task string for the agent.
+        # Use English so tool calls (web search, finance APIs) work reliably,
+        # but append a language instruction so the final answer is in the
+        # user's original language.
+        if query_lang != "en":
+            agent_task = (
+                f"{english_query}\n\n"
+                f"(Original query in {query_lang}: {data.content})\n"
+                f"IMPORTANT: Respond in {query_lang} (same language as the original query)."
+            )
+        else:
+            agent_task = data.content
+
         async def generate_agentic():
             full_response = ""
             gen_start = time.time()
@@ -359,8 +425,8 @@ User's request: {data.content}"""
                 # Convert history to dict format for agent
                 context = [{"role": msg.role, "content": msg.content} for msg in history]
 
-                # Stream agent output
-                async for output in agent.run_streaming(data.content, context):
+                # Stream agent output (show_steps=False to only show final answer)
+                async for output in agent.run_streaming(agent_task, context, show_steps=False):
                     full_response += output
                     # Escape for SSE format
                     for line in output.split('\n'):
@@ -381,6 +447,7 @@ User's request: {data.content}"""
                     conversation_id=conversation_id,
                     role="assistant",
                     content=full_response,
+                    sources=rag_sources if rag_sources else None,
                 )
                 log("✓ Assistant message saved")
 
@@ -396,12 +463,18 @@ User's request: {data.content}"""
                 log(f"REQUEST COMPLETE - Total time: {total_elapsed:.2f}s")
                 log("=" * 60)
 
+                if rag_sources:
+                    yield f"data: [SOURCES]{json.dumps(rag_sources)}\n\n"
                 yield "data: [DONE]\n\n"
 
             except Exception as e:
                 import traceback
                 log(f"✗ AGENTIC ERROR: {str(e)}")
                 log(traceback.format_exc())
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
                 yield f"data: [ERROR] {str(e)}\n\n"
 
         return StreamingResponse(
@@ -458,11 +531,17 @@ User's request: {data.content}"""
             log(f"REQUEST COMPLETE - Total time: {total_elapsed:.2f}s")
             log("=" * 60)
 
+            if rag_sources:
+                yield f"data: [SOURCES]{json.dumps(rag_sources)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
             import traceback
             log(f"✗ ERROR: {str(e)}")
             log(traceback.format_exc())
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             yield f"data: [ERROR] {str(e)}\n\n"
 
     return StreamingResponse(

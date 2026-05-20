@@ -16,6 +16,8 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
     isLoading,
     isStreaming,
     streamingContent,
+    streamingSources,
+    messageSources,
     pendingAttachments,
     isUploading,
     fetchMessages,
@@ -77,7 +79,11 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
         ) : (
           <div className="divide-y divide-dark-chat">
             {messages.map((message) => (
-              <ChatMessage key={message.id} message={message} />
+              <ChatMessage
+                key={message.id}
+                message={message}
+                sources={messageSources[message.id]}
+              />
             ))}
 
             {/* Streaming message */}
@@ -92,6 +98,7 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
                   attachments: [],
                 }}
                 isStreaming
+                sources={streamingSources}
               />
             )}
 

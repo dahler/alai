@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Message, Attachment, UploadResponse } from '../types/chat'
+import type { Message, Attachment, UploadResponse, Source } from '../types/chat'
 import { messagesService } from '../services/messages'
 import { conversationsService } from '../services/conversations'
 import { uploadsService } from '../services/uploads'
@@ -9,6 +9,8 @@ interface ChatState {
   isLoading: boolean
   isStreaming: boolean
   streamingContent: string
+  streamingSources: Source[]
+  messageSources: Record<number, Source[]>  // message id → sources
   error: string | null
   pendingAttachments: UploadResponse[]
   isUploading: boolean
@@ -26,6 +28,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoading: false,
   isStreaming: false,
   streamingContent: '',
+  streamingSources: [],
+  messageSources: {},
   error: null,
   pendingAttachments: [],
   isUploading: false,
@@ -34,7 +38,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ isLoading: true, error: null })
     try {
       const conversation = await conversationsService.get(conversationId)
-      set({ messages: conversation.messages, isLoading: false })
+      const messages = conversation.messages
+      const messageSources: Record<number, Source[]> = {}
+      for (const msg of messages) {
+        // Primary: DB-persisted sources
+        if (msg.sources && msg.sources.length > 0) {
+          messageSources[msg.id] = msg.sources as Source[]
+        } else {
+          // Fallback: localStorage cache written at session time
+          const cached = localStorage.getItem(`citation_${msg.id}`)
+          if (cached) {
+            try { messageSources[msg.id] = JSON.parse(cached) } catch { /* ignore */ }
+          }
+        }
+      }
+      set({ messages, messageSources, isLoading: false })
     } catch (error) {
       set({ error: 'Failed to fetch messages', isLoading: false })
     }
@@ -69,11 +87,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...state.messages, tempUserMessage],
       isStreaming: true,
       streamingContent: '',
+      streamingSources: [],
       error: null,
       pendingAttachments: [],
     }))
 
     let fullContent = ''
+    let latestSources: Source[] = []
 
     await messagesService.sendStream(
       conversationId,
@@ -86,16 +106,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
       // On done
       async () => {
-        // Stop streaming
-        set({ isStreaming: false, streamingContent: '' })
+        const sseSources = latestSources
+        set({ isStreaming: false, streamingContent: '', streamingSources: [] })
 
-        // Re-fetch messages from server to ensure proper rendering
-        // This mimics what happens on page refresh and guarantees correct formatting
         try {
           const conversation = await conversationsService.get(conversationId)
-          set({ messages: conversation.messages })
+          const messages = conversation.messages
+          const messageSources: Record<number, Source[]> = {}
+
+          // Primary: DB-persisted sources; fallback: localStorage cache
+          for (const msg of messages) {
+            if (msg.sources && msg.sources.length > 0) {
+              messageSources[msg.id] = msg.sources as Source[]
+            } else {
+              const cached = localStorage.getItem(`citation_${msg.id}`)
+              if (cached) {
+                try { messageSources[msg.id] = JSON.parse(cached) } catch { /* ignore */ }
+              }
+            }
+          }
+
+          // Fallback: use in-memory SSE sources for the last assistant message
+          if (sseSources.length > 0) {
+            const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+            if (lastAssistant && !messageSources[lastAssistant.id]) {
+              messageSources[lastAssistant.id] = sseSources
+            }
+            // Persist to localStorage so it survives refresh
+            if (lastAssistant) {
+              localStorage.setItem(`citation_${lastAssistant.id}`, JSON.stringify(sseSources))
+            }
+          }
+
+          set({ messages, messageSources })
         } catch {
-          // Fallback: add message locally if fetch fails
           const assistantMessage: Message = {
             id: Date.now(),
             conversation_id: conversationId,
@@ -114,8 +158,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({
           isStreaming: false,
           streamingContent: '',
+          streamingSources: [],
           error: error,
         })
+      },
+      // On sources
+      (sources: Source[]) => {
+        latestSources = sources
+        set({ streamingSources: sources })
       }
     )
   },

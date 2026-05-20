@@ -28,8 +28,12 @@ RELATIONSHIP_TYPES = [
     "owned_by",
     "modifies",
     "modified_by",
+    "revokes",
+    "revoked_by",
     "references",
     "referenced_by",
+    "implements",
+    "implemented_by",
     "affects",
     "affected_by",
     "depends_on",
@@ -50,8 +54,6 @@ RELATIONSHIP_TYPES = [
     "creates",
     "uses",
     "used_by",
-    "implements",
-    "implemented_by",
     "provides",
     "provided_by",
     "related_to",
@@ -71,9 +73,16 @@ ENTITIES IN TEXT:
 RULES:
 1. Output ONLY valid JSON, no markdown, no explanation
 2. Only extract relationships between the provided entities
-3. Use these relationship types: regulates, owns, modifies, references, affects, depends_on, belongs_to, mentions, collaborates_with, uses, implements, provides, related_to, part_of, created_by, works_for, located_in
-4. Include confidence score (0.0-1.0) for each relationship
-5. Include a brief context/evidence from the text
+3. For PASAL entities, prioritize these relationship types:
+   - "modifies": pasal mengubah/memodifikasi another pasal
+   - "revokes": pasal mencabut/menghapus another pasal
+   - "references": pasal merujuk/menyebut another pasal
+   - "implements": pasal melaksanakan/menjabarkan another pasal
+4. Other types: regulates, owns, affects, depends_on, belongs_to, mentions,
+   collaborates_with, uses, provides, related_to, part_of, created_by,
+   works_for, located_in
+5. Include confidence score (0.0-1.0) for each relationship
+6. Include a brief context/evidence from the text
 
 OUTPUT FORMAT:
 {{
@@ -321,10 +330,15 @@ class RelationshipExtractionService:
 
         # Common mappings
         relation_mappings = {
+            # English verbs
             "regulate": "regulates",
             "own": "owns",
             "modify": "modifies",
+            "revoke": "revokes",
+            "repeal": "revokes",
+            "annul": "revokes",
             "reference": "references",
+            "cite": "references",
             "affect": "affects",
             "depend": "depends_on",
             "depend_on": "depends_on",
@@ -351,6 +365,21 @@ class RelationshipExtractionService:
             "is_a": "related_to",
             "type_of": "related_to",
             "instance_of": "related_to",
+            # Indonesian verbs
+            "mengubah": "modifies",
+            "memodifikasi": "modifies",
+            "mencabut": "revokes",
+            "menghapus": "revokes",
+            "merujuk": "references",
+            "menyebut": "references",
+            "mengacu": "references",
+            "melaksanakan": "implements",
+            "menjabarkan": "implements",
+            "mengatur": "regulates",
+            "menyebutkan": "mentions",
+            "mempengaruhi": "affects",
+            "membentuk": "creates",
+            "mendirikan": "creates",
         }
 
         # Check mapping

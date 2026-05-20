@@ -12,12 +12,16 @@ export default function AuthCallback() {
 
   useEffect(() => {
     const token = searchParams.get('token')
+    const errorCode = searchParams.get('error')
+    const errorDescription = searchParams.get('error_description')
 
     if (token) {
       authService.setToken(token)
       checkAuth().then(() => {
         navigate('/')
       })
+    } else if (errorCode) {
+      setError(errorDescription || errorCode)
     } else {
       setError('No authentication token received')
     }

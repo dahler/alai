@@ -17,12 +17,14 @@ class MessageService:
         role: str,
         content: str,
         attachment_ids: list[int] | None = None,
+        sources: list | None = None,
     ) -> Message:
         # Create message
         message = await self.repo.add_message(
             conversation_id=conversation_id,
             role=role,
             content=content,
+            sources=sources,
         )
 
         # Link attachments to message

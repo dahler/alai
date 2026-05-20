@@ -6,6 +6,7 @@ import Chat from './pages/Chat'
 import AuthCallback from './pages/AuthCallback'
 import { Files } from './pages/Files'
 import { Documents } from './pages/Documents'
+import { KnowledgeGraph } from './pages/KnowledgeGraph'
 import { useAuthStore } from './store/authStore'
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
       </Route>
       <Route path="/files" element={<Files />} />
       <Route path="/documents" element={<Documents />} />
+      <Route path="/graph" element={<KnowledgeGraph />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
     </Routes>
   )

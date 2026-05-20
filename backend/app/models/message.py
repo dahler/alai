@@ -1,7 +1,7 @@
 from datetime import datetime
-from sqlalchemy import String, Text, DateTime, ForeignKey, func
+from sqlalchemy import String, Text, DateTime, ForeignKey, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Any
 
 from app.database import Base
 
@@ -22,6 +22,7 @@ class Message(Base):
     )
     role: Mapped[str] = mapped_column(String(20))  # user, assistant, system
     content: Mapped[str] = mapped_column(Text)
+    sources: Mapped[Any | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

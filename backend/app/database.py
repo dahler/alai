@@ -13,6 +13,10 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     future=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,   # drop stale connections before use
+    pool_recycle=1800,    # recycle connections after 30 min
 )
 
 async_session_maker = async_sessionmaker(
@@ -25,11 +29,12 @@ async_session_maker = async_sessionmaker(
 
 
 async def get_db():
-    session = async_session_maker()
-    try:
-        yield session
-    finally:
-        await session.close()
+    async with async_session_maker() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def create_tables():
