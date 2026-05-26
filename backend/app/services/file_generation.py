@@ -12,7 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-GENERATED_DIR = Path("./generated_files")
+# Absolute path anchored to this file's location so it never depends on CWD
+GENERATED_DIR = Path(__file__).parent.parent.parent / "generated_files"
 FILE_TTL_SECONDS = 3600  # files expire after 1 hour
 
 

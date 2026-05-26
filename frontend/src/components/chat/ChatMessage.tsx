@@ -203,7 +203,10 @@ function makeMarkdownComponents(
       }
       // Generated file download link
       if (href && href.startsWith('/api/files/download/')) {
-        const label = typeof children === 'string' ? children : 'Download file'
+        const label =
+          typeof children === 'string' ? children
+          : Array.isArray(children) && typeof children[0] === 'string' ? children[0]
+          : 'Download file'
         const ext = label.split('.').pop()?.toLowerCase() ?? ''
         const iconColor: Record<string, string> = {
           xlsx: 'text-green-400', csv: 'text-green-400',
