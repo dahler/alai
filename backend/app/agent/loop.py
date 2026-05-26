@@ -321,6 +321,160 @@ JSON:"""
 
         return None
 
+    # =========================================================================
+    # File Generation Helpers
+    # =========================================================================
+
+    _FILE_FORMAT_KEYWORDS: Dict[str, List[str]] = {
+        "xlsx": ["excel", "xlsx", "spreadsheet", "xls"],
+        "csv": ["csv", "comma separated", "comma-separated"],
+        "docx": ["word document", "docx", "ms word", "word file"],
+        "pptx": ["powerpoint", "pptx", "presentation", "slide deck", "slides"],
+        "pdf": ["pdf"],
+    }
+
+    _GENERATION_KEYWORDS = [
+        "create", "generate", "make", "build", "produce", "export", "write",
+        "download", "save as", "give me a", "give me an",
+        # Indonesian
+        "buat", "buat laporan", "buat file", "buat dokumen", "buat presentasi",
+        "ekspor", "simpan sebagai", "unduh", "cetak", "generate", "hasilkan",
+    ]
+
+    _RAG_SIGNALS = [
+        "document", "my file", "uploaded", "from my", "based on my",
+        "knowledge base", "report from", "extract from", "from the",
+        "dokumen", "file saya", "berdasarkan", "dari dokumen", "dari file",
+    ]
+
+    def _detect_file_request(self, task: str) -> Tuple[Optional[str], str]:
+        """Return (format, filename) if this is a file-generation request, else (None, '')."""
+        tl = task.lower()
+        has_gen_intent = any(kw in tl for kw in self._GENERATION_KEYWORDS)
+        if not has_gen_intent:
+            return None, ""
+        for fmt, keywords in self._FILE_FORMAT_KEYWORDS.items():
+            if any(kw in tl for kw in keywords):
+                return fmt, self._derive_filename(task, fmt)
+        # "report" alone with generation intent → default to xlsx
+        if any(w in tl for w in ["report", "laporan", "table", "tabel"]):
+            return "xlsx", self._derive_filename(task, "xlsx")
+        return None, ""
+
+    def _derive_filename(self, task: str, fmt: str) -> str:
+        """Derive a sensible filename from the task description."""
+        stopwords = {
+            "create", "generate", "make", "build", "an", "a", "the", "me",
+            "give", "export", "download", "please", "buat", "buat", "tolong",
+            "excel", "xlsx", "csv", "pdf", "word", "docx", "pptx",
+            "powerpoint", "spreadsheet", "presentation", "document", "report",
+            "laporan", "dokumen", "presentasi",
+        }
+        words = [w for w in task.lower().split() if w not in stopwords and w.isalnum()]
+        base = "_".join(words[:5]) if words else "document"
+        return f"{base}.{fmt}"
+
+    async def _llm_build_file_content(
+        self, task: str, fmt: str, observations: List[str]
+    ) -> Dict[str, Any]:
+        """Ask the LLM to construct a file content JSON from retrieved data."""
+        obs_block = ("\n\nRetrieved data to use:\n" + "\n\n".join(observations)) if observations else ""
+
+        fmt_hint = {
+            "xlsx": 'use "sheets": [{"name":"Sheet1","headers":[...],"rows":[[...]]}]',
+            "csv":  'use "sheets": [{"name":"Sheet1","headers":[...],"rows":[[...]]}]',
+            "docx": 'use "sections": [{"heading":"...","level":1,"content":"...","table":{...}}]',
+            "pdf":  'use "sections": [{"heading":"...","level":1,"content":"...","bullets":["..."],"table":{...}}]',
+            "pptx": 'use "slides": [{"title":"...","bullets":["..."],"table":{...}}]',
+        }.get(fmt, 'use "sections"')
+
+        prompt = f"""Build a content JSON for a {fmt.upper()} file.
+
+User request: {task}{obs_block}
+
+Output ONLY valid JSON matching this schema:
+{{
+  "title": "...",
+  "{('sheets' if fmt in ('xlsx','csv') else 'slides' if fmt == 'pptx' else 'sections')}": [...]
+}}
+
+Schema hint for {fmt}: {fmt_hint}
+
+Rules:
+- Fill in REAL data from the retrieved information above (if any).
+- If no data was retrieved, create a realistic example based on the user's request.
+- Every table must have "headers" and "rows".
+- Keep row values as plain strings or numbers.
+- Output ONLY the JSON object, no markdown, no explanation.
+
+JSON:"""
+
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = await self.ai_service.generate_response(messages, use_agent_model=True)
+            self._log(f"LLM file content raw: {response[:200]}...")
+            json_match = re.search(r'\{.*\}', response.strip(), re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+        except Exception as e:
+            self._log(f"LLM file content error: {e}")
+
+        # Fallback skeleton
+        return {"title": task[:60], "sections": [{"heading": "Content", "content": task}]}
+
+    async def _handle_file_generation(
+        self,
+        task: str,
+        fmt: str,
+        filename: str,
+        context: Optional[List[Dict[str, str]]],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Dedicated handler for file-generation requests."""
+        observations: List[str] = []
+
+        # Step 1 — optionally pull data from the knowledge base
+        needs_rag = any(kw in task.lower() for kw in self._RAG_SIGNALS)
+        if needs_rag:
+            yield {"type": "thought", "content": "Searching documents to populate the file…"}
+            yield {"type": "action", "tool": "rag_search", "input": {"query": task, "top_k": 10}}
+            rag_result = await self.executor.execute("rag_search", {"query": task, "top_k": 10})
+            obs = rag_result.to_observation()
+            observations.append(obs)
+            yield {"type": "observation", "result": obs, "status": rag_result.status.value}
+
+        # Step 2 — ask LLM to structure the content JSON
+        yield {"type": "thought", "content": f"Building {fmt.upper()} content structure…"}
+        content = await self._llm_build_file_content(task, fmt, observations)
+
+        # Step 3 — call generate_file
+        gen_params = {
+            "format": fmt,
+            "filename": filename.rsplit(".", 1)[0],
+            "content": json.dumps(content, ensure_ascii=False),
+        }
+        yield {"type": "thought", "content": f"Generating {fmt.upper()} file…"}
+        yield {"type": "action", "tool": "generate_file", "input": gen_params}
+        file_result = await self.executor.execute("generate_file", gen_params)
+        yield {"type": "observation", "result": file_result.to_observation(), "status": file_result.status.value}
+
+        # Step 4 — compose final answer
+        if file_result.status == ExecutionStatus.SUCCESS and isinstance(file_result.result, dict):
+            r = file_result.result
+            dl_url = r.get("download_url", "")
+            dl_name = r.get("filename", filename)
+            answer = (
+                f"Your {fmt.upper()} file is ready!\n\n"
+                f"[{dl_name}]({dl_url})\n\n"
+                f"Click the link above to download."
+            )
+        else:
+            err = file_result.error or "unknown error"
+            answer = f"Sorry, I could not generate the file: {err}"
+
+        self.trace.final_answer = answer
+        self.trace.success = file_result.status == ExecutionStatus.SUCCESS
+        yield {"type": "final_answer", "content": answer, "sources": []}
+
     async def run(
         self,
         task: str,
@@ -351,6 +505,17 @@ JSON:"""
         self._log("AGENT RUN STARTED")
         self._log(f"TASK: {task[:120]}")
         self._log("=" * 60)
+
+        # File generation fast path — runs before the normal tool detection
+        file_fmt, file_name = self._detect_file_request(task)
+        if file_fmt:
+            self._log(f"FILE GENERATION REQUEST: format={file_fmt} filename={file_name}")
+            async for event in self._handle_file_generation(task, file_fmt, file_name, context):
+                yield event
+            await self.executor.close()
+            self.trace.total_time = time.time() - start_time
+            self._log(f"File generation done in {self.trace.total_time:.2f}s")
+            return
 
         # FORCED TOOL CALL: Use LLM to detect if we should auto-execute tool(s) first
         forced_tools = await self._detect_required_tool(task)
