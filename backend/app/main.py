@@ -8,7 +8,10 @@ from app.config import settings
 from app.database import create_tables
 # Import models to register them with Base.metadata before create_tables()
 from app.models import User, Conversation, Message, OAuthAccount, Attachment, DocumentChunk, Entity, EntityRelationship, DocumentEntity  # noqa: F401
-from app.routers import auth_router, conversations_router, messages_router, uploads_router, documents_router, graph_router, agent_router, ai_router
+from app.routers import (
+    auth_router, conversations_router, messages_router, uploads_router,
+    documents_router, graph_router, agent_router, ai_router, files_router,
+)
 from app.services.ai import AIService
 from app.services.embedding import EmbeddingService
 from app.router.service import RouterService
@@ -86,6 +89,7 @@ app.include_router(documents_router, prefix="/api")
 app.include_router(graph_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
+app.include_router(files_router, prefix="/api")
 
 
 @app.get("/")

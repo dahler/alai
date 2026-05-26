@@ -6,6 +6,7 @@ from app.routers.documents import router as documents_router
 from app.routers.graph import router as graph_router
 from app.routers.agent import router as agent_router
 from app.router.endpoint import router as ai_router
+from app.routers.files import router as files_router
 
 __all__ = [
     "auth_router",
@@ -16,4 +17,5 @@ __all__ = [
     "graph_router",
     "agent_router",
     "ai_router",
+    "files_router",
 ]

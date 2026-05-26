@@ -238,6 +238,7 @@ class ToolExecutor:
             "create_subtask": self._execute_create_subtask,
             "final_answer": self._execute_final_answer,
             "yahoo_finance": self._execute_yahoo_finance,
+            "generate_file": self._execute_generate_file,
         }
 
         handler = handlers.get(tool_name)
@@ -848,3 +849,37 @@ class ToolExecutor:
         except Exception as e:
             print(f"[AGENT] Yahoo Finance sync error: {e}")
             raise
+
+    async def _execute_generate_file(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate a downloadable file."""
+        import json as _json
+        from app.services.file_generation import FileGenerationService
+
+        fmt = params.get("format", "").lower()
+        filename = params.get("filename", "document")
+        content_raw = params.get("content", "{}")
+
+        if fmt not in ("csv", "xlsx", "docx", "pptx", "pdf"):
+            return {"error": f"Unsupported format '{fmt}'. Use: csv, xlsx, docx, pptx, pdf"}
+
+        try:
+            content = _json.loads(content_raw) if isinstance(content_raw, str) else content_raw
+        except _json.JSONDecodeError as e:
+            return {"error": f"Invalid content JSON: {e}"}
+
+        try:
+            svc = FileGenerationService()
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: svc.generate(fmt, filename, content)
+            )
+            return {
+                "file_id": result["file_id"],
+                "filename": result["filename"],
+                "download_url": result["download_url"],
+                "message": (
+                    f"File generated successfully. "
+                    f"Download: [{result['filename']}]({result['download_url']})"
+                ),
+            }
+        except Exception as e:
+            return {"error": f"File generation failed: {e}"}

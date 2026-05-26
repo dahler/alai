@@ -7,7 +7,6 @@ Tools are functions the AI can call to interact with external systems.
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
-import json
 
 
 class ToolCategory(str, Enum):
@@ -346,6 +345,52 @@ yahoo_finance_tool = Tool(
 )
 
 
+# File Generation Tool
+generate_file_tool = Tool(
+    name="generate_file",
+    description=(
+        "Generate a downloadable file (CSV, Excel, Word, PowerPoint, or PDF) from structured content. "
+        "Use this when the user asks to create a report, spreadsheet, presentation, or document to download. "
+        "The content parameter must be a JSON string with this structure:\n"
+        '{\n'
+        '  "title": "Document title",\n'
+        '  "sections": [\n'
+        '    {\n'
+        '      "heading": "Section heading",\n'
+        '      "level": 1,\n'
+        '      "content": "Paragraph text",\n'
+        '      "bullets": ["Point 1", "Point 2"],\n'
+        '      "table": {"headers": ["Col1", "Col2"], "rows": [["A", 1], ["B", 2]]}\n'
+        '    }\n'
+        '  ],\n'
+        '  "sheets": [{"name": "Sheet1", "headers": ["Col","Val"], "rows": [[1,2]]}],\n'
+        '  "slides": [{"title": "Slide title", "bullets": ["Point 1"]}]\n'
+        '}\n'
+        "For xlsx/csv use 'sheets'. For pptx use 'slides'. For docx/pdf use 'sections'. "
+        "After calling this tool, include the download link in your response as: [filename](/api/files/download/{file_id})"
+    ),
+    category=ToolCategory.FILE,
+    parameters=[
+        ToolParameter(
+            name="format",
+            type="string",
+            description="File format to generate",
+            enum=["csv", "xlsx", "docx", "pptx", "pdf"],
+        ),
+        ToolParameter(
+            name="filename",
+            type="string",
+            description="Base filename without extension (e.g. 'sales_report')",
+        ),
+        ToolParameter(
+            name="content",
+            type="string",
+            description="JSON string describing the file content (title, sections/sheets/slides)",
+        ),
+    ],
+)
+
+
 # Register all built-in tools
 def register_builtin_tools():
     """Register all built-in tools with the global registry."""
@@ -361,6 +406,7 @@ def register_builtin_tools():
         create_task_tool,
         final_answer_tool,
         yahoo_finance_tool,
+        generate_file_tool,
     ]
     for tool in tools:
         tool_registry.register(tool)

@@ -40,3 +40,9 @@ tavily-python==0.7.24
 
 # Stock market data
 yfinance==0.2.40
+
+# File generation
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+reportlab==4.2.5
