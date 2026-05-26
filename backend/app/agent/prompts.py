@@ -47,6 +47,23 @@ Final Answer: [Answer based ONLY on actual tool results, not imagination]
 | Math problems | calculator |
 | Specific URL | read_url |
 | Current time | get_current_time |
+| Create/generate/export Excel, XLSX, spreadsheet | generate_file (format: "xlsx") |
+| Create/generate Word document, DOCX | generate_file (format: "docx") |
+| Create/generate PDF | generate_file (format: "pdf") |
+| Create/generate PowerPoint, PPTX, presentation | generate_file (format: "pptx") |
+| Create/generate CSV, export data | generate_file (format: "csv") |
+
+## FILE GENERATION RULES
+
+When the user asks to create, generate, export, or download a file (Excel, Word, PowerPoint, PDF, CSV, spreadsheet, report, presentation):
+
+1. You MUST call `generate_file` — NEVER respond with a text table or markdown instead.
+2. Build the `content` JSON from information you already have or retrieved via rag_search/web_search.
+3. If you need data first, call rag_search or web_search BEFORE generate_file.
+4. After generate_file succeeds, include the download link in your Final Answer EXACTLY like this:
+   [filename.xlsx](/api/files/download/{file_id})
+   The link will render as a download button for the user.
+5. DO NOT write the file content as a markdown table. Call the tool.
 
 ## FORBIDDEN - DO NOT DO THIS:
 
@@ -55,6 +72,7 @@ Final Answer: [Answer based ONLY on actual tool results, not imagination]
 - DO NOT generate fake dates, prices, or news
 - DO NOT skip the Action/Action Input format
 - DO NOT give Final Answer before using at least one tool
+- DO NOT respond with a markdown table when the user asked for a downloadable file
 """
 
 

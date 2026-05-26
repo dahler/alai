@@ -54,13 +54,14 @@ Actions:
 - rag_search: Questions about uploaded documents/files, summarization requests
 - vision_analysis: Questions about images, charts, diagrams, visual content
 - memory_lookup: References to previous conversation, "you said", "we discussed"
-- agentic: ANYTHING needing current/real-time data: news, weather, prices, web search, latest info
+- agentic: ANYTHING needing current/real-time data OR file generation/export
 
 Rules:
 1. Output ONLY valid JSON
 2. No markdown, no explanation
 3. Format: {"action":"<action>","confidence":<0.0-1.0>}
 4. IMPORTANT: Use "agentic" for ANY query about current events, prices, weather, news, or "latest"
+5. IMPORTANT: Use "agentic" for ANY request to create/generate/export/download a file (Excel, Word, PDF, PowerPoint, CSV, spreadsheet, report, presentation)
 
 User request: {query}
 Has attachments: {has_attachments}

@@ -109,6 +109,23 @@ ACTION_KEYWORDS = {
         "research", "investigate", "analyze and", "compare",
         "step by step", "plan", "complex", "calculate and explain",
         "help me with", "figure out", "multiple steps",
-        "use tools", "search and summarize", "find and analyze"
+        "use tools", "search and summarize", "find and analyze",
+        # File generation triggers (English)
+        "create excel", "create spreadsheet", "generate excel",
+        "make excel", "make spreadsheet", "export excel",
+        "create word", "create document", "generate word",
+        "create pdf", "generate pdf", "make pdf",
+        "create powerpoint", "create presentation", "generate pptx",
+        "make presentation", "create report", "generate report",
+        "make report", "download file", "generate file",
+        "export to", "export as", "download as",
+        "create a file", "make a file", "write to excel",
+        "write to csv", "export csv", "generate csv",
+        # File generation triggers (Indonesian)
+        "buat excel", "buat spreadsheet", "buat laporan",
+        "buat file", "buat dokumen", "buat presentasi",
+        "buat pdf", "buat word", "ekspor ke",
+        "unduh sebagai", "simpan sebagai", "generate laporan",
+        "export laporan", "cetak laporan",
     ],
 }
