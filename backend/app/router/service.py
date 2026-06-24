@@ -1,85 +1,87 @@
+"""
+RouterService: classifies every user message before it enters the pipeline.
+
+Uses SmartLLM (Claude -> OpenAI -> Ollama) for ALL routing decisions.
+No keyword lists, no regex heuristics — pure language-model understanding.
+
+Only hard-coded bypass: has_images=True -> VISION_ANALYSIS (100% certain).
+"""
+
 import json
 import re
 import time
 import logging
-from typing import Optional
-import httpx
 
-from app.config import settings
-from app.router.constants import (
-    RouterAction,
-    RouterResult,
-    CONFIDENCE_THRESHOLD_HIGH,
-    CONFIDENCE_THRESHOLD_LOW,
-    DEFAULT_FALLBACK_ACTION,
-    ACTION_KEYWORDS,
-)
+from app.router.constants import RouterAction, RouterResult
+from app.services.smart_llm import SmartLLM
 
 logger = logging.getLogger(__name__)
 
 
-def log(message: str):
-    """Print log message with timestamp"""
+def log(message: str) -> None:
     timestamp = time.strftime("%H:%M:%S")
     print(f"[{timestamp}] [ROUTER] {message}")
 
 
-# Common Indonesian function words — fast heuristic, no LLM needed
-_ID_MARKERS = {
-    "yang", "dan", "di", "ke", "dari", "dengan", "untuk", "pada",
-    "ini", "itu", "saya", "anda", "kamu", "mereka", "kami", "kita",
-    "ada", "tidak", "bisa", "akan", "sudah", "sedang", "belum", "lagi",
-    "juga", "harga", "lihat", "cari", "apa", "bagaimana", "siapa",
-    "berapa", "kapan", "dimana", "mengapa", "kenapa", "apakah",
-    "adalah", "dalam", "oleh", "atau", "jika", "maka", "namun",
-    "saat", "sekarang", "terbaru", "berita", "cuaca", "kurs",
-}
+_SYSTEM = (
+    "You are a request router for an enterprise AI assistant. "
+    "Respond ONLY with a valid JSON object — no markdown, no explanation."
+)
 
-DETECT_TRANSLATE_PROMPT = """Detect the language of the query and translate it to English.
-
-Query: {query}
-
-Output ONLY valid JSON with no extra text:
-{{"lang": "<iso-639-1 code>", "english": "<English translation>"}}
-
-If already English, set lang to "en" and copy the query unchanged.
-JSON:"""
-
-
-# Optimized router prompt - minimal tokens, maximum clarity
-ROUTER_PROMPT = """You are a request classifier. Classify the user request into ONE action.
+_PROMPT = """\
+Classify the user request into exactly one action.
 
 Actions:
-- direct_answer: General knowledge questions, explanations, coding help, historical facts
-- rag_search: Questions about uploaded documents/files, summarization requests
-- vision_analysis: Questions about images, charts, diagrams, visual content
-- memory_lookup: References to previous conversation, "you said", "we discussed"
-- agentic: ANYTHING needing current/real-time data OR file generation/export
+  direct_answer   - factual question, definition, explanation, coding help;
+                    general knowledge only, no live or external data needed
+  rag_search      - question about internal company matters: SOPs, policies,
+                    procedures, roles, responsibilities, workflows, products,
+                    or any topic likely covered in the user's uploaded documents
+  agentic         - ONLY when the request explicitly requires one of:
+                    * live/current external data (prices, exchange rates,
+                      weather, stock quotes, news, economic indicators)
+                    * creating/generating a file to download (Excel, Word,
+                      PDF, PowerPoint, laporan, dokumen, presentasi)
+                    * email tasks (read inbox, send email, reply to email)
+                    * any output the user wants to save or download
+  vision_analysis - user attached an image and wants it analysed
 
-Rules:
-1. Output ONLY valid JSON
-2. No markdown, no explanation
-3. Format: {"action":"<action>","confidence":<0.0-1.0>}
-4. IMPORTANT: Use "agentic" for ANY query about current events, prices, weather, news, or "latest"
-5. IMPORTANT: Use "agentic" for ANY request to create/generate/export/download a file (Excel, Word, PDF, PowerPoint, CSV, spreadsheet, report, presentation)
+Key rules (follow exactly):
+1. "generate/create/make/buat + report/Excel/Word/PDF/PowerPoint"
+   -> ALWAYS agentic
+2. "latest/current/today/terbaru/sekarang + rate/price/news/kurs"
+   -> ALWAYS agentic
+3. If "User has a knowledge base: true":
+   - WHO is responsible / siapa yang bertanggung jawab -> rag_search
+   - HOW does process X work / bagaimana proses X -> rag_search
+   - WHAT is the SOP / procedure / policy -> rag_search
+   - Any question about an internal company, its website, its products,
+     its teams, or its operations -> rag_search
+   - Mentioning a company name or website URL is NOT a reason for agentic
+4. If "User has a knowledge base: true" and unsure -> prefer rag_search
+5. If "User has a knowledge base: false" and unsure -> prefer agentic
+6. "what is X / explain Y / how does Z work" with no live-data need
+   AND knowledge base is false -> direct_answer
 
-User request: {query}
-Has attachments: {has_attachments}
-Has images: {has_images}
+Request: {query}
+Has file attachments : {has_attachments}
+Has image attachments: {has_images}
+User has a knowledge base: {has_knowledge_base}
+
+Return JSON:
+{{"action": "<action>", "confidence": <0.0-1.0>, "reason": "<one sentence>"}}
 
 JSON:"""
 
 
 class RouterService:
     """
-    AI Router/Orchestrator that classifies requests before main model processing.
-    Uses a small, fast model (gemma3:1b) for low-latency classification.
+    Classifies user requests using SmartLLM.
+    Provider cascade: Claude -> OpenAI -> Ollama -> safe default.
     """
 
-    def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
-        self.base_url = base_url or settings.OLLAMA_BASE_URL
-        self.model = model or settings.OLLAMA_ROUTER_MODEL
-        self.timeout = 30.0  # Fast timeout for router
+    def __init__(self) -> None:
+        self._llm = SmartLLM(timeout=30.0)
 
     async def classify(
         self,
@@ -88,350 +90,166 @@ class RouterService:
         has_images: bool = False,
         has_knowledge_base: bool = False,
     ) -> RouterResult:
-        """
-        Classify a user request into an action type.
-
-        Args:
-            query: The user's input text
-            has_attachments: Whether the request includes file attachments
-            has_images: Whether the request includes image attachments
-
-        Returns:
-            RouterResult with action and confidence score
-        """
-        start_time = time.time()
+        start = time.time()
         log("=" * 50)
-        log("CLASSIFYING REQUEST")
-        log("=" * 50)
-        log(f"Query: {query[:80]}{'...' if len(query) > 80 else ''}")
-        log(f"Has attachments: {has_attachments}")
-        log(f"Has images: {has_images}")
-        log(f"Has knowledge base: {has_knowledge_base}")
-
-        # Fast path: Check for obvious patterns first (no LLM call needed)
-        quick_result = self._quick_classify(
-            query, has_attachments, has_images, has_knowledge_base
+        log(f"CLASSIFYING  [{self._llm.provider_label}]")
+        log(f"Query: {query[:100]}{'...' if len(query) > 100 else ''}")
+        log(
+            f"attachments={has_attachments} "
+            f"images={has_images} "
+            f"kb={has_knowledge_base}"
         )
-        if quick_result and quick_result.confidence >= CONFIDENCE_THRESHOLD_HIGH:
-            elapsed = time.time() - start_time
-            log(f"⚡ QUICK CLASSIFY (no LLM needed)")
-            log(f"   Action: {quick_result.action.value}")
-            log(f"   Confidence: {quick_result.confidence:.0%}")
-            log(f"   Reason: {quick_result.reason}")
-            log(f"   Time: {elapsed*1000:.0f}ms")
+
+        # Only hard-coded rule: image attached -> vision (always certain)
+        if has_images:
+            log("VISION (image attached)")
             log("=" * 50)
-            return quick_result
+            return RouterResult(
+                action=RouterAction.VISION_ANALYSIS,
+                confidence=0.99,
+                reason="image_attached",
+            )
 
-        # LLM-based classification
+        # LLM classification
+        prompt = _PROMPT.format(
+            query=query[:600],
+            has_attachments=str(has_attachments).lower(),
+            has_images=str(has_images).lower(),
+            has_knowledge_base=str(has_knowledge_base).lower(),
+        )
+
         try:
-            log(f"Calling LLM router model: {self.model}...")
-            result = await self._llm_classify(query, has_attachments, has_images)
-            elapsed = time.time() - start_time
-            log(f"🤖 LLM CLASSIFY")
-            log(f"   Action: {result.action.value}")
-            log(f"   Confidence: {result.confidence:.0%}")
-            log(f"   Reason: {result.reason or 'llm_response'}")
-            log(f"   Time: {elapsed*1000:.0f}ms")
-
-            # If LLM confidence is low, use quick classify as fallback
-            if result.confidence < CONFIDENCE_THRESHOLD_LOW and quick_result:
-                log(f"⚠ Low confidence, using quick classify fallback")
-                result = quick_result
-
-            # If LLM said direct_answer but user has a knowledge base,
-            # treat it as RAG — let the search decide if results are relevant.
-            if (
-                result.action == RouterAction.DIRECT_ANSWER
-                and has_knowledge_base
-                and result.confidence < CONFIDENCE_THRESHOLD_HIGH
-            ):
-                log(f"⚠ User has knowledge base — overriding direct_answer → rag_search")
-                result = RouterResult(
-                    action=RouterAction.RAG_SEARCH,
-                    confidence=0.75,
-                    reason="knowledge_base_override"
-                )
-
+            raw = await self._llm.complete(prompt, _SYSTEM)
+            result = self._parse(raw)
+            elapsed = (time.time() - start) * 1000
+            log(
+                f"action={result.action.value} "
+                f"confidence={result.confidence:.0%} "
+                f"reason={result.reason}"
+            )
+            log(f"Time: {elapsed:.0f}ms")
             log("=" * 50)
             return result
 
-        except Exception as e:
-            elapsed = time.time() - start_time
-            log(f"✗ Classification error: {e}")
-            log(f"   Time: {elapsed*1000:.0f}ms")
-            # Fallback to quick classify or default
-            if quick_result:
-                log(f"   Using quick classify fallback: {quick_result.action.value}")
-                log("=" * 50)
-                return quick_result
-            log(f"   Using default fallback: {DEFAULT_FALLBACK_ACTION.value}")
+        except Exception as exc:
+            elapsed = (time.time() - start) * 1000
+            log(f"Classification error ({exc}) -- defaulting to agentic")
+            log(f"Time: {elapsed:.0f}ms")
             log("=" * 50)
             return RouterResult(
-                action=DEFAULT_FALLBACK_ACTION,
+                action=RouterAction.AGENTIC,
                 confidence=0.5,
-                reason="fallback_error"
+                reason="classification_error_fallback",
             )
 
-    def _quick_classify(
-        self,
-        query: str,
-        has_attachments: bool,
-        has_images: bool,
-        has_knowledge_base: bool = False,
-    ) -> Optional[RouterResult]:
-        """
-        Quick rule-based classification without LLM.
-        Returns high confidence results for obvious patterns.
-        """
-        query_lower = query.lower()
+    def _parse(self, raw: str) -> RouterResult:
+        cleaned = raw.strip()
 
-        # Image present = vision analysis
-        if has_images:
-            return RouterResult(
-                action=RouterAction.VISION_ANALYSIS,
-                confidence=0.95,
-                reason="image_attached"
-            )
-
-        # Score agentic and RAG keywords up front so we can use both before the KB bias.
-        agentic_keywords = ACTION_KEYWORDS.get(RouterAction.AGENTIC, [])
-        rag_keywords = ACTION_KEYWORDS.get(RouterAction.RAG_SEARCH, [])
-        agentic_matches = sum(1 for kw in agentic_keywords if kw in query_lower)
-        rag_matches = sum(1 for kw in rag_keywords if kw in query_lower)
-
-        # 2+ agentic signals → definitely real-time (beats KB bias and RAG)
-        if agentic_matches >= 2:
-            return RouterResult(
-                action=RouterAction.AGENTIC,
-                confidence=min(0.8 + (agentic_matches * 0.05), 0.95),
-                reason=f"agentic_keyword_match_{agentic_matches}"
-            )
-
-        # 1 agentic signal + no document keywords → real-time query, even with a KB
-        if agentic_matches >= 1 and rag_matches == 0:
-            log(f"Quick classify: AGENTIC (1 keyword, no RAG signal)")
-            return RouterResult(
-                action=RouterAction.AGENTIC,
-                confidence=0.82,
-                reason=f"agentic_keyword_no_rag_conflict"
-            )
-
-        # If the user has a knowledge base, bias toward RAG for any non-trivial query
-        # (only reached when there is no unambiguous real-time signal above)
-        if has_knowledge_base and len(query_lower.split()) >= 3:
-            return RouterResult(
-                action=RouterAction.RAG_SEARCH,
-                confidence=0.78,
-                reason="knowledge_base_default"
-            )
-
-        # Clear RAG document keywords
-        if rag_matches >= 1:
-            log(f"Quick classify: RAG_SEARCH (matched {rag_matches} keyword(s))")
-            return RouterResult(
-                action=RouterAction.RAG_SEARCH,
-                confidence=min(0.85 + (rag_matches * 0.03), 0.95),
-                reason=f"rag_keyword_match_{rag_matches}"
-            )
-
-        # Remaining agentic matches (reached only when rag_matches >= 1 too)
-        if agentic_matches >= 1:
-            log(f"Quick classify: AGENTIC (matched {agentic_matches} keyword(s))")
-            return RouterResult(
-                action=RouterAction.AGENTIC,
-                confidence=min(0.8 + (agentic_matches * 0.05), 0.95),
-                reason=f"agentic_keyword_match_{agentic_matches}"
-            )
-
-        # Check other keyword patterns (need 2+ matches)
-        for action, keywords in ACTION_KEYWORDS.items():
-            if action in [RouterAction.AGENTIC, RouterAction.RAG_SEARCH]:
-                continue  # Already handled above
-            matches = sum(1 for kw in keywords if kw in query_lower)
-            if matches >= 2:
-                return RouterResult(
-                    action=action,
-                    confidence=min(0.7 + (matches * 0.1), 0.95),
-                    reason=f"keyword_match_{matches}"
-                )
-
-        # Attachment without image = likely RAG
-        if has_attachments:
-            return RouterResult(
-                action=RouterAction.RAG_SEARCH,
-                confidence=0.8,
-                reason="attachment_present"
-            )
-
-        return None
-
-    async def _llm_classify(
-        self,
-        query: str,
-        has_attachments: bool,
-        has_images: bool,
-    ) -> RouterResult:
-        """
-        Use LLM for classification when quick classify is uncertain.
-        """
-        prompt = ROUTER_PROMPT.format(
-            query=query[:500],  # Truncate long queries
-            has_attachments=str(has_attachments).lower(),
-            has_images=str(has_images).lower(),
-        )
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,  # Low temp for deterministic output
-                        "num_predict": 50,   # Short response
-                        "top_p": 0.9,
-                    }
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            raw_output = data.get("response", "")
-
-        return self._parse_response(raw_output)
-
-    def _parse_response(self, raw_output: str) -> RouterResult:
-        """
-        Parse LLM output to RouterResult with malformed JSON recovery.
-        """
-        # Clean the output
-        cleaned = raw_output.strip()
-
-        # Try direct JSON parse
         try:
-            parsed = json.loads(cleaned)
-            return self._validate_parsed(parsed)
-        except json.JSONDecodeError:
+            return self._from_dict(json.loads(cleaned))
+        except (json.JSONDecodeError, ValueError):
             pass
 
-        # Try to extract JSON from text
-        json_match = re.search(r'\{[^{}]*\}', cleaned)
-        if json_match:
+        m = re.search(r'\{[^{}]+\}', cleaned, re.DOTALL)
+        if m:
             try:
-                parsed = json.loads(json_match.group())
-                return self._validate_parsed(parsed)
-            except json.JSONDecodeError:
+                return self._from_dict(json.loads(m.group()))
+            except (json.JSONDecodeError, ValueError):
                 pass
 
-        # Try to extract action from malformed output
-        action = self._extract_action_from_text(cleaned)
-        if action:
-            return RouterResult(
-                action=action,
-                confidence=0.6,
-                reason="extracted_from_text"
-            )
+        lower = cleaned.lower()
+        for action in RouterAction:
+            if action.value in lower:
+                return RouterResult(
+                    action=action,
+                    confidence=0.55,
+                    reason="text_extracted",
+                )
 
-        # Final fallback
-        log(f"⚠ Failed to parse LLM output: {cleaned[:100]}")
+        log(f"Could not parse LLM response: {cleaned[:80]}")
         return RouterResult(
-            action=DEFAULT_FALLBACK_ACTION,
+            action=RouterAction.AGENTIC,
             confidence=0.5,
-            reason="parse_failed"
+            reason="parse_failed_fallback",
         )
 
-    def _validate_parsed(self, parsed: dict) -> RouterResult:
-        """Validate and convert parsed JSON to RouterResult."""
-        action_str = parsed.get("action", "").lower().strip()
-        confidence = parsed.get("confidence", 0.8)
-
-        # Validate action
+    def _from_dict(self, d: dict) -> RouterResult:
+        action_str = str(d.get("action", "")).lower().strip()
         try:
             action = RouterAction(action_str)
         except ValueError:
-            # Try to match partial action name
-            for valid_action in RouterAction:
-                if valid_action.value in action_str or action_str in valid_action.value:
-                    action = valid_action
-                    break
-            else:
-                action = DEFAULT_FALLBACK_ACTION
-                confidence = 0.5
+            action = next(
+                (
+                    a for a in RouterAction
+                    if a.value in action_str or action_str in a.value
+                ),
+                RouterAction.AGENTIC,
+            )
 
-        # Redirect external_api to agentic (external_api is not implemented)
         if action == RouterAction.EXTERNAL_API:
             action = RouterAction.AGENTIC
-            log("Redirecting EXTERNAL_API -> AGENTIC")
 
-        # Validate confidence
-        try:
-            confidence = float(confidence)
-            confidence = max(0.0, min(1.0, confidence))
-        except (ValueError, TypeError):
-            confidence = 0.7
-
-        return RouterResult(action=action, confidence=confidence)
-
-    def _extract_action_from_text(self, text: str) -> Optional[RouterAction]:
-        """Try to extract action type from malformed text output."""
-        text_lower = text.lower()
-        for action in RouterAction:
-            if action.value in text_lower:
-                return action
-        return None
-
-    def _is_likely_english(self, text: str) -> bool:
-        """Heuristic: 2+ Indonesian marker words → treat as Indonesian."""
-        words = set(text.lower().split())
-        return len(words & _ID_MARKERS) < 2
+        confidence = float(d.get("confidence", 0.8))
+        confidence = max(0.0, min(1.0, confidence))
+        reason = str(d.get("reason", ""))
+        return RouterResult(
+            action=action,
+            confidence=confidence,
+            reason=reason,
+        )
 
     async def detect_and_translate(self, query: str) -> tuple[str, str]:
         """
-        Detect query language and translate to English if needed.
+        Detect language and return (lang_code, query_for_routing).
 
-        Returns:
-            (lang_code, english_query)
-            lang_code is an ISO-639-1 code, e.g. "id", "en".
+        Claude/OpenAI understand multilingual natively, so we pass the
+        original text unchanged to classify().  For Ollama we still
+        translate so the smaller model routes correctly.
         """
-        if self._is_likely_english(query):
+        # Rule-based detection (fast, no LLM)
+        _ID_MARKERS = {
+            "yang", "dan", "di", "ke", "dari", "dengan", "untuk", "pada",
+            "ini", "itu", "saya", "anda", "kamu", "ada", "tidak", "bisa",
+            "akan", "sudah", "harga", "cari", "apa", "bagaimana", "berapa",
+            "apakah", "adalah", "atau", "jika", "saat", "sekarang",
+            "terbaru", "berita", "kurs",
+        }
+        words = set(query.lower().split())
+        is_indonesian = len(words & _ID_MARKERS) >= 2
+
+        if not is_indonesian:
             return "en", query
 
-        prompt = DETECT_TRANSLATE_PROMPT.format(query=query[:300])
+        # Cloud LLMs understand Indonesian natively — no translation needed
+        if self._llm.provider in ("claude", "openai"):
+            return "id", query
+
+        # Ollama fallback: translate so smaller model routes correctly
+        prompt = (
+            f"Translate this to English. "
+            f"Output only the English translation, nothing else."
+            f"\n\n{query[:300]}"
+        )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/generate",
-                    json={
-                        "model": self.model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.1, "num_predict": 120},
-                    },
-                )
-                response.raise_for_status()
-                raw = response.json().get("response", "")
-
-            match = re.search(r'\{[^{}]*\}', raw)
-            if match:
-                data = json.loads(match.group())
-                lang = data.get("lang", "en")
-                english = data.get("english", query).strip()
-                if english:
-                    log(f"Translated [{lang}] → EN: {english[:80]}")
-                    return lang, english
+            translated = await self._llm.complete(prompt)
+            translated = translated.strip()
+            if translated:
+                log(f"Translated [id] -> en: {translated[:80]}")
+                return "id", translated
         except Exception as exc:
-            log(f"Translation failed ({exc}), using original query")
+            log(f"Translation failed ({exc}), using original")
 
-        return "en", query
+        return "id", query
 
     async def health_check(self) -> bool:
-        """Check if the router model is available."""
+        if self._llm.provider in ("claude", "openai"):
+            return True
+        import httpx
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{self.base_url}/api/tags")
-                if response.status_code == 200:
-                    models = response.json().get("models", [])
-                    return any(m.get("name", "").startswith(self.model.split(":")[0]) for m in models)
+                r = await client.get(
+                    f"{self._llm._ollama_url}/api/tags"
+                )
+                return r.status_code == 200
         except Exception:
-            pass
-        return False
+            return False

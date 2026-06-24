@@ -19,7 +19,7 @@ from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.graph_linking import GraphLinkingService
 from app.services.graph_retrieval import GraphRetrievalService, RetrievalResult
 from app.services.embedding import EmbeddingService
-from app.services.document import DocumentService
+from app.services.docling_service import DoclingService
 from app.config import settings
 
 
@@ -46,7 +46,7 @@ class KnowledgeGraphService:
         self.graph_linking = GraphLinkingService(db)
         self.graph_retrieval = GraphRetrievalService(db)
         self.embedding_service = EmbeddingService()
-        self.document_service = DocumentService()
+        self.docling_service = DoclingService()
         self.chunk_size = settings.RAG_CHUNK_SIZE
         self.chunk_overlap = settings.RAG_CHUNK_OVERLAP
 
@@ -109,10 +109,11 @@ class KnowledgeGraphService:
         log(f"Company doc: {is_company_doc}")
         log(f"Extract graph: {extract_graph}")
 
-        # Step 1: Extract text
+        # Step 1: Parse document
         log("-" * 40)
-        log("Step 1: Extracting text...")
-        text = await self.document_service.extract_text(attachment.file_path)
+        log("Step 1: Parsing document...")
+        parsed = await self.docling_service.parse(attachment.file_path)
+        text = parsed.full_markdown if parsed else None
 
         if not text:
             log("✗ Failed to extract text")
@@ -384,6 +385,7 @@ class KnowledgeGraphService:
         top_k: int = 5,
         vector_weight: float = 0.6,
         graph_weight: float = 0.4,
+        source_filter: Optional[str] = None,
     ) -> list[RetrievalResult]:
         """
         Perform hybrid search combining vector and graph.
@@ -394,12 +396,13 @@ class KnowledgeGraphService:
             top_k: Number of results
             vector_weight: Weight for vector similarity
             graph_weight: Weight for graph relevance
+            source_filter: If set, restrict results to files whose name contains this string
 
         Returns:
             List of RetrievalResult objects
         """
         return await self.graph_retrieval.hybrid_search(
-            query, user_id, top_k, vector_weight, graph_weight
+            query, user_id, top_k, vector_weight, graph_weight, source_filter=source_filter
         )
 
     async def get_graph_stats(self) -> dict:

@@ -3,13 +3,13 @@
 @tailwind utilities;
 
 :root {
-  --dark-bg: #1a1a2e;
-  --dark-sidebar: #16213e;
-  --dark-chat: #0f3460;
-  --dark-input: #1a1a2e;
-  --dark-hover: #e94560;
-  --dark-text: #eaeaea;
-  --dark-muted: #a0a0a0;
+  --dark-bg: #27272a;
+  --dark-sidebar: #18181b;
+  --dark-chat: #3f3f46;
+  --dark-input: #27272a;
+  --dark-hover: #6366f1;
+  --dark-text: #f4f4f5;
+  --dark-muted: #a1a1aa;
 }
 
 * {
@@ -32,20 +32,20 @@ body {
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--dark-sidebar);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--dark-muted);
-  border-radius: 4px;
+  background: var(--dark-chat);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--dark-hover);
+  background: var(--dark-muted);
 }
 
 /* Code styling */
@@ -67,7 +67,7 @@ code {
 }
 
 .prose pre {
-  background-color: #0d1117;
+  background-color: #1a1a1d;
   border-radius: 0.5rem;
 }
 

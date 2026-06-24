@@ -89,6 +89,62 @@ function AttachmentDisplay({ attachment }: { attachment: Attachment }) {
   )
 }
 
+function FileDownloadButton({ href, label }: { href: string; label: string }) {
+  const [downloading, setDownloading] = useState(false)
+  const ext = label.split('.').pop()?.toLowerCase() ?? ''
+  const iconColor: Record<string, string> = {
+    xlsx: 'text-green-400', csv: 'text-green-400',
+    docx: 'text-blue-400', pdf: 'text-red-400',
+    pptx: 'text-orange-400',
+  }
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    setDownloading(true)
+    try {
+      const token = localStorage.getItem('token')
+      const headers: HeadersInit = {}
+      if (token) headers['Authorization'] = `Bearer ${token}`
+      const res = await fetch(href, { credentials: 'include', headers })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = label
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      // fallback: open in new tab
+      window.open(href, '_blank', 'noreferrer')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-col gap-1 my-1">
+      <button
+        onClick={handleClick}
+        disabled={downloading}
+        className="inline-flex items-center gap-2 px-3 py-2 bg-dark-sidebar border border-dark-chat rounded-lg hover:border-blue-500 transition-colors group disabled:opacity-60"
+      >
+        <svg className={`w-5 h-5 flex-shrink-0 ${iconColor[ext] ?? 'text-dark-muted'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+        </svg>
+        <span className="text-sm text-dark-text group-hover:text-blue-400 transition-colors">
+          {downloading ? 'Downloading…' : label}
+        </span>
+        <svg className="w-4 h-4 text-dark-muted group-hover:text-blue-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+      </button>
+    </span>
+  )
+}
+
 function makeMarkdownComponents(
   sources: Source[],
   onView: (s: Source) => void
@@ -203,31 +259,11 @@ function makeMarkdownComponents(
       }
       // Generated file download link
       if (href && href.startsWith('/api/files/download/')) {
-        const label =
+        return <FileDownloadButton href={href} label={
           typeof children === 'string' ? children
           : Array.isArray(children) && typeof children[0] === 'string' ? children[0]
           : 'Download file'
-        const ext = label.split('.').pop()?.toLowerCase() ?? ''
-        const iconColor: Record<string, string> = {
-          xlsx: 'text-green-400', csv: 'text-green-400',
-          docx: 'text-blue-400', pdf: 'text-red-400',
-          pptx: 'text-orange-400',
-        }
-        return (
-          <a
-            href={href}
-            download
-            className="inline-flex items-center gap-2 px-3 py-2 my-1 bg-dark-sidebar border border-dark-chat rounded-lg hover:border-blue-500 transition-colors group"
-          >
-            <svg className={`w-5 h-5 flex-shrink-0 ${iconColor[ext] ?? 'text-dark-muted'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-            </svg>
-            <span className="text-sm text-dark-text group-hover:text-blue-400 transition-colors">{label}</span>
-            <svg className="w-4 h-4 text-dark-muted group-hover:text-blue-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-            </svg>
-          </a>
-        )
+        } />
       }
 
       return (
@@ -447,13 +483,13 @@ export function ChatMessage({ message, isStreaming = false, sources = [] }: Chat
     <>
       {viewing && <DocumentViewerModal source={viewing} onClose={() => setViewing(null)} />}
     <div
-      className={`flex gap-4 p-4 ${
+      className={`flex gap-4 px-6 py-5 ${
         isUser ? 'bg-dark-bg' : 'bg-dark-sidebar'
       }`}
     >
       {/* Avatar */}
       <div
-        className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-medium ${
+        className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-medium text-white ${
           isUser ? 'bg-blue-600' : 'bg-dark-hover'
         }`}
       >

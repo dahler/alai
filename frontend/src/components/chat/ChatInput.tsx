@@ -71,7 +71,7 @@ export function ChatInput({
   }
 
   return (
-    <div className="border-t border-dark-sidebar bg-dark-bg p-4">
+    <div className="border-t border-dark-chat bg-dark-sidebar px-6 py-4">
       <div className="max-w-3xl mx-auto">
         {/* Pending attachments preview */}
         {pendingAttachments.length > 0 && (
@@ -136,7 +136,7 @@ export function ChatInput({
         )}
 
         {/* Input area */}
-        <div className="relative flex items-end bg-dark-sidebar rounded-xl border border-dark-chat focus-within:border-dark-hover transition-colors">
+        <div className="relative flex items-end bg-dark-bg rounded-xl border border-dark-chat focus-within:border-dark-hover transition-colors shadow-sm">
           {/* File upload button */}
           <input
             ref={fileInputRef}

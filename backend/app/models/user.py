@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from app.models.oauth_account import OAuthAccount
     from app.models.attachment import Attachment
     from app.models.document_chunk import DocumentChunk
+    from app.models.report_template import ReportTemplate
 
 
 class User(Base):
@@ -39,4 +40,7 @@ class User(Base):
     )
     document_chunks: Mapped[list["DocumentChunk"]] = relationship(
         "DocumentChunk", back_populates="user", cascade="all, delete-orphan"
+    )
+    report_templates: Mapped[list["ReportTemplate"]] = relationship(
+        "ReportTemplate", back_populates="owner", cascade="all, delete-orphan"
     )

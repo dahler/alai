@@ -1,6 +1,11 @@
 import { api } from './api'
 
-export type GraphStatus = 'pending' | 'processing' | 'done' | 'failed' | 'skipped' | null
+export type GraphStatus =
+  | 'pending' | 'processing' | 'done' | 'failed' | 'skipped' | null
+
+export type ProcessingStatus =
+  | 'uploaded' | 'parsing' | 'sectioning' | 'summarizing'
+  | 'embedding' | 'done' | 'failed' | null
 
 export interface Document {
   id: number
@@ -10,6 +15,10 @@ export interface Document {
   is_company_doc: boolean
   created_at: string
   graph_status?: GraphStatus
+  processing_status?: ProcessingStatus
+  sections_count?: number
+  version?: number
+  folder_id?: number | null
 }
 
 export interface DocumentListResponse {
@@ -18,6 +27,7 @@ export interface DocumentListResponse {
 }
 
 export interface UploadStats {
+  sections_created: number
   chunks_created: number
   processing_time: number
 }
@@ -29,6 +39,7 @@ export interface UploadResponse {
   file_size: number
   is_company_doc: boolean
   graph_status: GraphStatus
+  processing_status: ProcessingStatus
   message: string
   stats: UploadStats
 }
@@ -39,6 +50,7 @@ export interface BatchUploadResult {
   id?: number
   file_size?: number
   graph_status?: GraphStatus
+  processing_status?: ProcessingStatus
   stats?: UploadStats
   error?: string
 }
@@ -57,6 +69,20 @@ export interface DeleteResponse {
   graph_relationships_deleted: number
 }
 
+export interface DocumentChunk {
+  id: number
+  chunk_index: number
+  chunk_text: string
+  heading_context: string | null
+  page_start: number
+  page_end: number
+}
+
+export interface DocumentChunksResponse {
+  document: { id: number; filename: string; sections_count: number }
+  chunks: DocumentChunk[]
+}
+
 export interface GraphStats {
   total_entities: number
   total_relationships: number
@@ -66,102 +92,127 @@ export interface GraphStats {
 }
 
 export const documentsService = {
-  // List all documents (personal + company)
   async list(): Promise<DocumentListResponse> {
     const response = await api.get('/documents')
     return response.data
   },
 
-  // Upload a document for RAG
   async upload(
     file: File,
-    isCompanyDoc: boolean = false,
-    extractGraph: boolean = true,
-    onProgress?: (progress: number) => void
+    isCompanyDoc = false,
+    extractGraph = true,
+    onProgress?: (progress: number) => void,
+    folderId?: number | null,
   ): Promise<UploadResponse> {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('is_company_doc', String(isCompanyDoc))
     formData.append('extract_graph', String(extractGraph))
-
+    if (folderId != null) formData.append('folder_id', String(folderId))
     const response = await api.post('/documents/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (progressEvent) => {
-        if (onProgress && progressEvent.total) {
-          const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-          onProgress(progress)
-        }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: (e) => {
+        if (onProgress && e.total)
+          onProgress(Math.round((e.loaded * 100) / e.total))
       },
     })
     return response.data
   },
 
-  // Upload multiple documents in one request
   async uploadBatch(
     files: File[],
-    isCompanyDoc: boolean = false,
-    extractGraph: boolean = true,
-    onProgress?: (progress: number) => void
+    isCompanyDoc = false,
+    extractGraph = true,
+    onProgress?: (progress: number) => void,
+    folderId?: number | null,
   ): Promise<BatchUploadResponse> {
     const formData = new FormData()
-    files.forEach((file) => formData.append('files', file))
+    files.forEach((f) => formData.append('files', f))
     formData.append('is_company_doc', String(isCompanyDoc))
     formData.append('extract_graph', String(extractGraph))
-
+    if (folderId != null) formData.append('folder_id', String(folderId))
     const response = await api.post('/documents/upload-batch', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (progressEvent) => {
-        if (onProgress && progressEvent.total) {
-          // Cap at 95 — remaining time is server-side processing
-          const pct = Math.round((progressEvent.loaded * 100) / progressEvent.total)
-          onProgress(Math.min(pct, 95))
-        }
+      onUploadProgress: (e) => {
+        if (onProgress && e.total)
+          onProgress(Math.min(Math.round((e.loaded * 100) / e.total), 95))
       },
     })
     return response.data
   },
 
-  // Delete a document
   async delete(documentId: number): Promise<DeleteResponse> {
     const response = await api.delete(`/documents/${documentId}`)
     return response.data
   },
 
-  // Search documents
-  async search(query: string, topK: number = 5): Promise<any> {
+  async search(query: string, topK = 5): Promise<any> {
     const response = await api.get('/documents/search', {
       params: { query, top_k: topK },
     })
     return response.data
   },
 
-  // Get graph extraction status for a document
-  async getGraphStatus(documentId: number): Promise<{ id: number; graph_status: GraphStatus }> {
+  async getGraphStatus(
+    documentId: number,
+  ): Promise<{ id: number; graph_status: GraphStatus; processing_status: ProcessingStatus }> {
     const response = await api.get(`/documents/${documentId}/graph-status`)
     return response.data
   },
 
-  // Trigger (re-)extraction of knowledge graph for an already-embedded document
-  async reExtractGraph(documentId: number): Promise<{ id: number; graph_status: GraphStatus }> {
+  async reExtractGraph(
+    documentId: number,
+  ): Promise<{ id: number; graph_status: GraphStatus }> {
     const response = await api.post(`/documents/${documentId}/extract-graph`)
     return response.data
   },
 
-  // Get graph statistics
+  async moveToFolder(
+    documentId: number,
+    folderId: number | null,
+  ): Promise<{ id: number; folder_id: number | null }> {
+    const response = await api.patch(`/documents/${documentId}/folder`, {
+      folder_id: folderId,
+    })
+    return response.data
+  },
+
+  async getChunks(documentId: number): Promise<DocumentChunksResponse> {
+    const response = await api.get(`/documents/${documentId}/chunks`)
+    return response.data
+  },
+
+  async fetchBlob(documentId: number): Promise<Blob> {
+    const response = await api.get(`/documents/${documentId}/download`, {
+      responseType: 'blob',
+    })
+    return response.data
+  },
+
+  async download(documentId: number, filename: string): Promise<void> {
+    const response = await api.get(`/documents/${documentId}/download`, {
+      responseType: 'blob',
+    })
+    const url = window.URL.createObjectURL(response.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    window.URL.revokeObjectURL(url)
+  },
+
   async getGraphStats(): Promise<GraphStats> {
     const response = await api.get('/graph/stats')
     return response.data
   },
 
-  // Get document graph data
   async getDocumentGraph(documentId: number): Promise<any> {
     const response = await api.get(`/graph/documents/${documentId}`)
     return response.data
   },
 
-  // Get related documents
   async getRelatedDocuments(documentId: number): Promise<any> {
     const response = await api.get(`/graph/documents/${documentId}/related`)
     return response.data

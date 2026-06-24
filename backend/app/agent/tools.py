@@ -18,6 +18,7 @@ class ToolCategory(str, Enum):
     KNOWLEDGE = "knowledge"
     UTILITY = "utility"
     FILE = "file"
+    EMAIL = "email"
 
 
 @dataclass
@@ -162,6 +163,12 @@ rag_search_tool = Tool(
             description="Number of results to return (1-10)",
             required=False,
             default=5,
+        ),
+        ToolParameter(
+            name="source_filter",
+            type="string",
+            description="Optional filename filter — only return chunks from files whose name contains this string (case-insensitive). E.g. 'SOP' to restrict to SOP documents.",
+            required=False,
         ),
     ],
 )
@@ -391,6 +398,117 @@ generate_file_tool = Tool(
 )
 
 
+# Email Read Tool
+email_read_tool = Tool(
+    name="email_read",
+    description=(
+        "Read emails from the user's Microsoft Outlook mailbox. "
+        "Can list recent messages from a folder, read a specific email by ID, "
+        "or search across all mail. "
+        "Actions: 'list' (default), 'read', 'search'."
+    ),
+    category=ToolCategory.EMAIL,
+    parameters=[
+        ToolParameter(
+            name="action",
+            type="string",
+            description="'list' to list recent emails, 'read' to read a specific email, 'search' to search emails",
+            required=False,
+            default="list",
+            enum=["list", "read", "search"],
+        ),
+        ToolParameter(
+            name="folder",
+            type="string",
+            description="Mail folder to list from: inbox, sent, drafts, deleted, junk",
+            required=False,
+            default="inbox",
+        ),
+        ToolParameter(
+            name="top",
+            type="number",
+            description="Maximum number of messages to return (default 10, max 25)",
+            required=False,
+            default=10,
+        ),
+        ToolParameter(
+            name="message_id",
+            type="string",
+            description="Message ID to read (required when action='read')",
+            required=False,
+        ),
+        ToolParameter(
+            name="query",
+            type="string",
+            description="Search query (required when action='search')",
+            required=False,
+        ),
+    ],
+)
+
+# Email Send Tool
+email_send_tool = Tool(
+    name="email_send",
+    description=(
+        "Send a new email from the user's Microsoft Outlook account. "
+        "Always confirm the recipient, subject, and body with the user before calling this tool."
+    ),
+    category=ToolCategory.EMAIL,
+    parameters=[
+        ToolParameter(
+            name="to",
+            type="string",
+            description="Recipient email address (or comma-separated list for multiple)",
+        ),
+        ToolParameter(
+            name="subject",
+            type="string",
+            description="Email subject line",
+        ),
+        ToolParameter(
+            name="body",
+            type="string",
+            description="Email body text (plain text or HTML)",
+        ),
+        ToolParameter(
+            name="cc",
+            type="string",
+            description="CC email address(es), comma-separated",
+            required=False,
+        ),
+    ],
+)
+
+# Email Reply Tool
+email_reply_tool = Tool(
+    name="email_reply",
+    description=(
+        "Reply to an existing email in the user's Microsoft Outlook account. "
+        "Always confirm the reply content with the user before sending."
+    ),
+    category=ToolCategory.EMAIL,
+    parameters=[
+        ToolParameter(
+            name="message_id",
+            type="string",
+            description="The ID of the message to reply to",
+        ),
+        ToolParameter(
+            name="body",
+            type="string",
+            description="Reply body text",
+        ),
+        ToolParameter(
+            name="reply_all",
+            type="boolean",
+            description="If true, reply to all recipients",
+            required=False,
+            default=False,
+        ),
+    ],
+)
+
+
 # Register all built-in tools
 def register_builtin_tools():
     """Register all built-in tools with the global registry."""
@@ -407,6 +525,9 @@ def register_builtin_tools():
         final_answer_tool,
         yahoo_finance_tool,
         generate_file_tool,
+        email_read_tool,
+        email_send_tool,
+        email_reply_tool,
     ]
     for tool in tools:
         tool_registry.register(tool)

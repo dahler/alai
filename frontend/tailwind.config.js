@@ -9,13 +9,13 @@ export default {
     extend: {
       colors: {
         dark: {
-          bg: '#1a1a2e',
-          sidebar: '#16213e',
-          chat: '#0f3460',
-          input: '#1a1a2e',
-          hover: '#e94560',
-          text: '#eaeaea',
-          muted: '#a0a0a0',
+          bg: '#27272a',
+          sidebar: '#18181b',
+          chat: '#3f3f46',
+          input: '#27272a',
+          hover: '#6366f1',
+          text: '#f4f4f5',
+          muted: '#a1a1aa',
         },
       },
     },

@@ -1,18 +1,23 @@
 import base64
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 import httpx
 from urllib.parse import urlencode
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.repositories.user import UserRepository
 from app.repositories.conversation import ConversationRepository
 from app.models.user import User
+from app.models.oauth_account import OAuthAccount
 from app.schemas.auth import Token, MicrosoftUserInfo
+
+# Scopes required for email read/send plus basic profile
+MICROSOFT_SCOPES = "openid profile email User.Read offline_access Mail.Read Mail.Send"
 
 
 def _generate_pkce() -> tuple[str, str]:
@@ -59,7 +64,7 @@ class AuthService:
             "client_id": settings.MICROSOFT_CLIENT_ID,
             "response_type": "code",
             "redirect_uri": settings.MICROSOFT_REDIRECT_URI,
-            "scope": "openid profile email User.Read",
+            "scope": MICROSOFT_SCOPES,
             "response_mode": "query",
             "state": combined_state,
             "code_challenge": code_challenge,
@@ -121,6 +126,8 @@ class AuthService:
         # Exchange code for Microsoft token (with PKCE verifier)
         token_data = await self.exchange_code_for_token(code, code_verifier)
         ms_access_token = token_data.get("access_token")
+        ms_refresh_token = token_data.get("refresh_token")
+        expires_in = token_data.get("expires_in", 3600)
 
         # Get user info from Microsoft
         user_info = await self.get_microsoft_user_info(ms_access_token)
@@ -136,6 +143,15 @@ class AuthService:
             name=user_info.displayName,
         )
 
+        # Persist Microsoft OAuth tokens so agent email tools can use them
+        await self._save_oauth_tokens(
+            user_id=user.id,
+            provider_user_id=user_info.id,
+            access_token=ms_access_token,
+            refresh_token=ms_refresh_token,
+            expires_in=expires_in,
+        )
+
         # Migrate anonymous conversations if session ID provided
         if anonymous_session_id:
             await self.conversation_repo.migrate_anonymous_to_user(
@@ -146,6 +162,41 @@ class AuthService:
         token = self.create_access_token(user.id)
 
         return user, token
+
+    async def _save_oauth_tokens(
+        self,
+        user_id: int,
+        provider_user_id: str,
+        access_token: str,
+        refresh_token: str | None,
+        expires_in: int,
+    ) -> None:
+        """Upsert Microsoft OAuth tokens for a user."""
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        result = await self.db.execute(
+            select(OAuthAccount).where(
+                OAuthAccount.user_id == user_id,
+                OAuthAccount.provider == "microsoft",
+            )
+        )
+        account = result.scalar_one_or_none()
+        if account:
+            account.access_token = access_token
+            if refresh_token:
+                account.refresh_token = refresh_token
+            account.token_expires_at = expires_at
+            account.provider_user_id = provider_user_id
+        else:
+            account = OAuthAccount(
+                user_id=user_id,
+                provider="microsoft",
+                provider_user_id=provider_user_id,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_expires_at=expires_at,
+            )
+            self.db.add(account)
+        await self.db.commit()
 
     async def get_user_by_id(self, user_id: int) -> User | None:
         return await self.user_repo.get_by_id(user_id)

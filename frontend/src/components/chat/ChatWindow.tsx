@@ -104,8 +104,8 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
 
             {/* Typing indicator when streaming but no content yet */}
             {isStreaming && !streamingContent && (
-              <div className="flex gap-4 p-4 bg-dark-sidebar">
-                <div className="w-8 h-8 rounded-full bg-dark-hover flex items-center justify-center text-sm font-medium">
+              <div className="flex gap-4 px-6 py-5 bg-dark-sidebar">
+                <div className="w-8 h-8 rounded-full bg-dark-hover flex items-center justify-center text-sm font-medium text-white">
                   AI
                 </div>
                 <div className="flex items-center">

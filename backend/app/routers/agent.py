@@ -16,7 +16,7 @@ from app.database import get_db
 from app.middleware.auth import get_current_user, get_optional_user
 from app.models.user import User
 from app.services.ai import AIService
-from app.agent.loop import AgentLoop
+from app.agent.pipeline import AgentPipeline as AgentLoop
 from app.agent.tools import tool_registry
 from app.agent.executor import ToolExecutor
 
@@ -151,6 +151,11 @@ async def stream_agent(
         except Exception as e:
             log(f"Agent error: {str(e)}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            try:
+                await db.close()
+            except Exception:
+                pass
 
     return StreamingResponse(
         generate(),

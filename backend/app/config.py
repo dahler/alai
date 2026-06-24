@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/alai"
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/alai"
+    )
 
     # JWT
     JWT_SECRET_KEY: str = "your-secret-key-change-in-production"
@@ -27,24 +29,36 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_TEXT_MODEL: str = "gemma3:4b"  # For chat responses
     OLLAMA_VISION_MODEL: str = "qwen2.5vl"  # For requests with images
-    OLLAMA_ROUTER_MODEL: str = "gemma3:1b"  # Small model for request classification
+    OLLAMA_ROUTER_MODEL: str = "gemma3:1b"  # Small model for routing
     OLLAMA_AGENT_MODEL: str = "qwen2.5:14b"  # For agent/planner tasks
-    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"  # For RAG embeddings
+    OLLAMA_EMBEDDING_MODEL: str = "bge-m3"  # For RAG embeddings
+
+    # External LLM Providers (optional)
+    # Falls back to Ollama if both are empty.
+    ANTHROPIC_API_KEY: str = ""   # https://console.anthropic.com
+    OPENAI_API_KEY: str = ""      # https://platform.openai.com
 
     # Tavily (Web Search)
     TAVILY_API_KEY: str = ""  # Get from https://tavily.com
 
+    # Feature Flags
+    ENABLE_KNOWLEDGE_GRAPH: bool = False
+
     # RAG Settings
     RAG_CHUNK_SIZE: int = 500  # Characters per chunk
     RAG_CHUNK_OVERLAP: int = 50  # Overlap between chunks
-    RAG_TOP_K: int = 5  # Number of chunks to retrieve
-    RAG_EMBEDDING_DIM: int = 768  # Dimension of embedding vectors
+    RAG_TOP_K: int = 3  # Number of chunks to retrieve
+    RAG_EMBEDDING_DIM: int = 1024  # bge-m3 output dimension
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     # Anonymous Session
     ANONYMOUS_SESSION_COOKIE: str = "alai_session"
+
+    # Docling remote server (optional — set to Mac Mini IP to offload parsing)
+    # e.g. DOCLING_SERVER_URL=http://192.168.1.50:7777
+    DOCLING_SERVER_URL: str = ""
 
     # File Upload
     UPLOAD_DIR: str = "./uploads"

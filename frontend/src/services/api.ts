@@ -19,13 +19,24 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+// Registered by the router once it mounts — lets the axios interceptor
+// do a client-side redirect instead of a hard page reload.
+let _navigate: ((path: string) => void) | null = null
+export function registerNavigate(fn: (path: string) => void) {
+  _navigate = fn
+}
+
 // Response interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token')
-      window.location.href = '/'
+      if (_navigate) {
+        _navigate('/')
+      } else {
+        window.location.href = '/'
+      }
     }
     return Promise.reject(error)
   }

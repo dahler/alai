@@ -1,11 +1,14 @@
 import time
 import json
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import (
+    APIRouter, Depends, HTTPException, status, Request, Response
+)
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.database import get_db
 from app.services.conversation import ConversationService
 from app.services.message import MessageService
@@ -16,13 +19,43 @@ from app.services.knowledge_graph import KnowledgeGraphService
 from app.router.service import RouterService
 from app.router.constants import RouterAction
 from app.middleware.auth import get_optional_user, get_session_id
-from app.schemas.message import MessageResponse, SendMessageRequest, AttachmentInfo
+from app.schemas.message import SendMessageRequest, AttachmentInfo
 from app.models.user import User
 from app.models.message import Message
 from app.models.attachment import Attachment
-from app.agent.loop import AgentLoop
+from app.agent.pipeline import AgentPipeline as AgentLoop
 
-router = APIRouter(prefix="/conversations/{conversation_id}/messages", tags=["messages"])
+router = APIRouter(
+    prefix="/conversations/{conversation_id}/messages",
+    tags=["messages"],
+)
+
+_RAG_INSTRUCTIONS = (
+    "Instructions:\n"
+    "- LANGUAGE: You MUST reply in the exact same language the user used to "
+    "ask their question. If the question is in Indonesian, your entire answer "
+    "must be in Indonesian. If the question is in English, answer in English. "
+    "Never switch languages mid-answer.\n"
+    "- ACCURACY: Use ONLY information explicitly stated in the retrieved "
+    "content above. Do NOT invent, infer, elaborate beyond, or add anything "
+    "not literally present in the sources — even if it sounds reasonable.\n"
+    "- SCOPE: Focus on sections that directly answer the user's question. "
+    "Omit standalone framing sections (e.g. 'Pendahuluan', 'Peran dan "
+    "Tanggung Jawab') unless explicitly asked. When you cover a section, "
+    "always include ALL of its sub-sections — never skip one.\n"
+    "- HEADINGS: Each chunk header has the format 'number | title'. Use only "
+    "the title part (after the '|') as the heading — strip the number and "
+    "the '|' entirely (e.g. use 'Inisiasi, perencanaan dan perancangan', "
+    "not '2.1.1 Inisiasi, perencanaan dan perancangan').\n"
+    "- DETAIL: Under each heading write thorough paragraphs covering the full "
+    "purpose, every activity, all parties involved, any criteria or "
+    "conditions, and the outcome — exactly as described in the source. "
+    "Do not compress into bullet fragments or one-liners.\n"
+    "- CITATIONS: Cite the source number inline at the end of each "
+    "paragraph, e.g. [1].\n"
+    "- GAPS: If the retrieved content does not fully answer the question, "
+    "say so explicitly."
+)
 
 
 def log(message: str):
@@ -79,7 +112,6 @@ async def get_messages(
             detail="Access denied",
         )
 
-    # Fetch messages with attachments
     result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)
@@ -117,7 +149,6 @@ async def send_message(
             detail="Access denied",
         )
 
-    # Save user message
     user_message = await msg_service.add_message(
         conversation_id=conversation_id,
         role="user",
@@ -125,7 +156,6 @@ async def send_message(
         attachment_ids=data.attachment_ids,
     )
 
-    # Reload message with attachments
     result = await db.execute(
         select(Message)
         .where(Message.id == user_message.id)
@@ -150,7 +180,8 @@ async def send_message_stream(
     log("NEW CHAT REQUEST")
     log("=" * 60)
     log(f"Conversation ID: {conversation_id}")
-    log(f"User message: {data.content[:100]}{'...' if len(data.content) > 100 else ''}")
+    preview = data.content[:100] + ("..." if len(data.content) > 100 else "")
+    log(f"User message: {preview}")
     log(f"Attachments: {len(data.attachment_ids)} file(s)")
 
     session_id = get_session_id(request, response) if not user else None
@@ -161,22 +192,21 @@ async def send_message_stream(
 
     conversation = await conv_service.get_by_id(conversation_id)
     if not conversation:
-        log("✗ Conversation not found!")
+        log("Conversation not found!")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Conversation not found",
         )
 
     if not await conv_service.can_access(conversation, user, session_id):
-        log("✗ Access denied!")
+        log("Access denied!")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
 
-    log("✓ Access verified")
+    log("Access verified")
 
-    # Get attachment info for images and documents
     image_paths = []
     document_contents = []
     doc_service = DocumentService()
@@ -184,51 +214,57 @@ async def send_message_stream(
     if data.attachment_ids:
         log(f"Processing {len(data.attachment_ids)} attachment(s)...")
         result = await db.execute(
-            select(Attachment).where(Attachment.id.in_(data.attachment_ids))
+            select(Attachment).where(
+                Attachment.id.in_(data.attachment_ids)
+            )
         )
         attachments = result.scalars().all()
         log(f"  Found {len(attachments)} attachment(s) in database")
 
         for att in attachments:
-            log(f"  → {att.original_filename}")
-            log(f"    Type: {att.content_type}")
-            log(f"    Path: {att.file_path}")
+            log(f"  -> {att.original_filename}")
+            log(f"     Type: {att.content_type}")
 
             if att.content_type.startswith("image/"):
                 image_paths.append(att.file_path)
-                log(f"    ✓ Added as IMAGE")
+                log("     Added as IMAGE")
             else:
-                # Extract text from documents (PDF, TXT, etc.)
-                log(f"    Extracting text...")
+                log("     Extracting text...")
                 text = await doc_service.extract_text(att.file_path)
                 if text:
-                    # Truncate if too long
                     text = doc_service.truncate_text(text, max_chars=12000)
-                    document_contents.append(f"=== Document: {att.original_filename} ===\n{text}")
-                    log(f"    ✓ Extracted {len(text)} chars")
+                    document_contents.append(
+                        f"=== Document: {att.original_filename} ===\n{text}"
+                    )
+                    log(f"     Extracted {len(text)} chars")
                 else:
-                    log(f"    ✗ Failed to extract text")
+                    log("     Failed to extract text")
 
-        log(f"Summary: {len(image_paths)} image(s), {len(document_contents)} document(s)")
+        log(
+            f"Summary: {len(image_paths)} image(s), "
+            f"{len(document_contents)} document(s)"
+        )
 
     # Check if this user has any documents in their knowledge base
     from app.models.document_chunk import DocumentChunk
     from sqlalchemy import func as sql_func
     kb_count_result = await db.execute(
         select(sql_func.count()).select_from(DocumentChunk).where(
-            (DocumentChunk.user_id == user.id) | (DocumentChunk.is_company_doc == True)
-            if user else (DocumentChunk.is_company_doc == True)
+            (DocumentChunk.user_id == user.id) | DocumentChunk.is_company_doc
+            if user else DocumentChunk.is_company_doc
         )
     )
     has_knowledge_base = (kb_count_result.scalar() or 0) > 0
 
-    # Language detection + translation (translate → route in English → respond in original)
+    # Language detection + routing
     log("-" * 60)
     log("LANGUAGE DETECTION & ROUTING")
     log("-" * 60)
-    query_lang, english_query = await router_service.detect_and_translate(data.content)
+    query_lang, english_query = await router_service.detect_and_translate(
+        data.content
+    )
     if query_lang != "en":
-        log(f"Detected language: {query_lang} → translating for routing")
+        log(f"Detected language: {query_lang} -> translating for routing")
     else:
         log("Language: en (no translation needed)")
 
@@ -238,113 +274,139 @@ async def send_message_stream(
         has_images=len(image_paths) > 0,
         has_knowledge_base=has_knowledge_base,
     )
-    log(f"Router decision: {router_result.action.value} ({router_result.confidence:.0%})")
+    log(
+        f"Router decision: {router_result.action.value} "
+        f"({router_result.confidence:.0%})"
+    )
 
-    # RAG Search with Knowledge Graph if needed
     rag_context = ""
-    rag_sources: list[dict] = []  # [{number, filename, stored_filename, document_id}]
+    rag_sources: list[dict] = []
 
-    if router_result.action == RouterAction.RAG_SEARCH:
-        log("-" * 60)
-        log("HYBRID RAG RETRIEVAL (Vector + Knowledge Graph)")
-        log("-" * 60)
+    # Also run RAG for direct_answer when the user has a knowledge base
+    do_rag = router_result.action == RouterAction.RAG_SEARCH or (
+        has_knowledge_base
+        and router_result.action == RouterAction.DIRECT_ANSWER
+    )
 
-        kg_service = KnowledgeGraphService(db)
-        hybrid_results = await kg_service.hybrid_search(
-            query=data.content,  # use original language for semantic search
-            user_id=user.id if user else None,
-            top_k=5,
-            vector_weight=0.6,
-            graph_weight=0.4,
+    if do_rag:
+        log("-" * 60)
+        label = (
+            "Vector + Knowledge Graph"
+            if settings.ENABLE_KNOWLEDGE_GRAPH
+            else "Vector + Section Group Expansion"
         )
+        log(f"RAG RETRIEVAL ({label})")
+        log("-" * 60)
 
-        if hybrid_results:
-            # Build deduplicated source list (one entry per document)
-            seen_doc_ids: set[int] = set()
-            for r in hybrid_results:
-                if r.document_id not in seen_doc_ids:
-                    seen_doc_ids.add(r.document_id)
-                    rag_sources.append({
-                        "number": len(rag_sources) + 1,
-                        "filename": r.filename,
-                        "stored_filename": r.stored_filename,
-                        "document_id": r.document_id,
-                        "chunk_text": r.chunk_text,
-                    })
+        if settings.ENABLE_KNOWLEDGE_GRAPH:
+            kg_service = KnowledgeGraphService(db)
+            hybrid_results = await kg_service.hybrid_search(
+                query=data.content,
+                user_id=user.id if user else None,
+                top_k=5,
+                vector_weight=0.6,
+                graph_weight=0.4,
+            )
+            if hybrid_results:
+                seen_doc_ids: set[int] = set()
+                for r in hybrid_results:
+                    if r.document_id not in seen_doc_ids:
+                        seen_doc_ids.add(r.document_id)
+                        rag_sources.append({
+                            "number": len(rag_sources) + 1,
+                            "filename": r.filename,
+                            "stored_filename": r.stored_filename,
+                            "document_id": r.document_id,
+                            "chunk_text": r.chunk_text,
+                        })
+                doc_to_num = {
+                    s["document_id"]: s["number"] for s in rag_sources
+                }
+                rag_chunks = []
+                for result in hybrid_results:
+                    src_num = doc_to_num[result.document_id]
+                    chunk_info = f"[{src_num}] {result.filename}"
+                    if result.source == "hybrid":
+                        chunk_info += (
+                            f" (vector {result.vector_score:.0%},"
+                            f" graph {result.graph_score:.0%})"
+                        )
+                    elif result.source == "vector":
+                        chunk_info += (
+                            f" (similarity {result.vector_score:.0%})"
+                        )
+                    else:
+                        chunk_info += (
+                            f" (graph score {result.graph_score:.0%})"
+                        )
+                    chunk_info += "\n"
+                    if result.matched_entities:
+                        entities_str = ", ".join(
+                            f"{e['name']} ({e['type']})"
+                            for e in result.matched_entities[:3]
+                        )
+                        chunk_info += f"Related entities: {entities_str}\n"
+                    if result.relationships:
+                        rels_str = "; ".join(
+                            f"{r.get('source_name', 'Entity')} "
+                            f"{r['relation']} "
+                            f"{r.get('target_name', 'Entity')}"
+                            for r in result.relationships[:2]
+                        )
+                        chunk_info += f"Relationships: {rels_str}\n"
+                    chunk_info += f"\n{result.chunk_text}"
+                    rag_chunks.append(chunk_info)
+                rag_context = "\n\n---\n\n".join(rag_chunks)
+                log(
+                    f"Retrieved {len(hybrid_results)} chunks "
+                    f"from {len(rag_sources)} document(s)"
+                )
+            else:
+                log("No hybrid results found")
 
-            # Map document_id → source number for the prompt
-            doc_to_num = {s["document_id"]: s["number"] for s in rag_sources}
-
-            rag_chunks = []
-            for result in hybrid_results:
-                src_num = doc_to_num[result.document_id]
-                chunk_info = f"[{src_num}] {result.filename}"
-                if result.source == "hybrid":
-                    chunk_info += f" (vector {result.vector_score:.0%}, graph {result.graph_score:.0%})"
-                elif result.source == "vector":
-                    chunk_info += f" (similarity {result.vector_score:.0%})"
-                else:
-                    chunk_info += f" (graph score {result.graph_score:.0%})"
-                chunk_info += "\n"
-
-                if result.matched_entities:
-                    entities_str = ", ".join(
-                        f"{e['name']} ({e['type']})"
-                        for e in result.matched_entities[:3]
-                    )
-                    chunk_info += f"Related entities: {entities_str}\n"
-
-                if result.relationships:
-                    rels_str = "; ".join(
-                        f"{r.get('source_name', 'Entity')} {r['relation']} {r.get('target_name', 'Entity')}"
-                        for r in result.relationships[:2]
-                    )
-                    chunk_info += f"Relationships: {rels_str}\n"
-
-                chunk_info += f"\n{result.chunk_text}"
-                rag_chunks.append(chunk_info)
-
-            rag_context = "\n\n---\n\n".join(rag_chunks)
-            log(f"✓ Retrieved {len(hybrid_results)} chunks from {len(rag_sources)} document(s)")
-            log(f"  Sources: {sum(1 for r in hybrid_results if r.source == 'vector')} vector, "
-                f"{sum(1 for r in hybrid_results if r.source == 'graph')} graph, "
-                f"{sum(1 for r in hybrid_results if r.source == 'hybrid')} hybrid")
         else:
-            # Fallback to basic RAG if no hybrid results
-            log("⚠ No hybrid results, falling back to basic vector search")
+            # Knowledge graph disabled — use RAGService directly so section
+            # group expansion and BM25 re-ranking are applied.
             rag_service = RAGService(db)
             rag_results = await rag_service.search(
                 query=data.content,
                 user_id=user.id if user else None,
-                top_k=5,
             )
             if rag_results:
-                seen_doc_ids_fb: set[int] = set()
+                seen_doc_ids_v: set[int] = set()
                 for r in rag_results:
-                    doc_id = r.get("document_id") or r.get("attachment_id", 0)
-                    if doc_id and doc_id not in seen_doc_ids_fb:
-                        seen_doc_ids_fb.add(doc_id)
+                    doc_id = r.get("attachment_id", 0)
+                    if doc_id and doc_id not in seen_doc_ids_v:
+                        seen_doc_ids_v.add(doc_id)
                         rag_sources.append({
                             "number": len(rag_sources) + 1,
                             "filename": r["filename"],
                             "stored_filename": r.get("stored_filename", ""),
                             "document_id": doc_id,
-                            "chunk_text": r.get("chunk_text", ""),
                         })
-                doc_to_num_fb = {s["document_id"]: s["number"] for s in rag_sources}
+                doc_to_num_v = {
+                    s["document_id"]: s["number"] for s in rag_sources
+                }
                 rag_chunks = []
-                for result in rag_results:
-                    doc_id = result.get("document_id") or result.get("attachment_id", 0)
-                    num = doc_to_num_fb.get(doc_id, "?")
-                    rag_chunks.append(
-                        f"[{num}] {result['filename']} (similarity {result['similarity']:.0%})\n{result['chunk_text']}"
+                for r in rag_results:
+                    doc_id = r.get("attachment_id", 0)
+                    num = doc_to_num_v.get(doc_id, "?")
+                    heading = r.get("heading_context", "")
+                    header = (
+                        f"[{num}] {r['filename']} | {heading}"
+                        if heading else
+                        f"[{num}] {r['filename']}"
                     )
+                    chunk_text = r['chunk_text'][:4000]
+                    rag_chunks.append(f"{header}\n\n{chunk_text}")
                 rag_context = "\n\n---\n\n".join(rag_chunks)
-                log(f"✓ Retrieved {len(rag_results)} chunks (vector only)")
+                log(
+                    f"Retrieved {len(rag_results)} chunks "
+                    f"from {len(rag_sources)} document(s)"
+                )
             else:
-                log("⚠ No relevant documents found")
+                log("No relevant documents found")
 
-    # Save user message first
     log("Saving user message to database...")
     await msg_service.add_message(
         conversation_id=conversation_id,
@@ -352,58 +414,48 @@ async def send_message_stream(
         content=data.content,
         attachment_ids=data.attachment_ids,
     )
-    log("✓ User message saved")
+    log("User message saved")
 
-    # Get conversation history for context
-    history = await msg_service.get_recent_context(conversation_id, limit=20)
+    history = await msg_service.get_recent_context(conversation_id, limit=6)
     log(f"Loaded {len(history)} message(s) for context")
 
-    # Build the final user message with document content
     user_message = data.content
 
-    # Add RAG context if available
     if rag_context:
-        source_list = "\n".join(f"[{s['number']}] {s['filename']}" for s in rag_sources)
-        user_message = f"""The following information was retrieved from the knowledge base:
+        source_list = "\n".join(
+            f"[{s['number']}] {s['filename']}" for s in rag_sources
+        )
+        user_message = (
+            "The following information was retrieved from the knowledge base:"
+            f"\n\nSources:\n{source_list}"
+            f"\n\nRetrieved content:\n{rag_context}"
+            f"\n\n---\n\nUser's question: {data.content}"
+            f"\n\n{_RAG_INSTRUCTIONS}"
+        )
+        log(f"Enhanced message with RAG context ({len(user_message)} chars)")
 
-Sources:
-{source_list}
-
-Retrieved content:
-{rag_context}
-
----
-
-User's question: {data.content}
-
-Instructions: Answer based on the retrieved content above. When you use information from a source, cite it inline using its number, e.g. [1] or [2]. If the information doesn't fully answer the question, say so."""
-        log(f"Enhanced message with RAG context ({len(user_message)} total chars)")
-
-    # Add directly attached document content (for newly uploaded docs)
     elif document_contents:
         doc_text = "\n\n".join(document_contents)
-        user_message = f"""The user has attached the following document(s):
+        user_message = (
+            f"The user has attached the following document(s):\n\n"
+            f"{doc_text}\n\nUser's request: {data.content}"
+        )
+        log(
+            f"Enhanced message with {len(document_contents)} document(s) "
+            f"({len(user_message)} total chars)"
+        )
 
-{doc_text}
-
-User's request: {data.content}"""
-        log(f"Enhanced message with {len(document_contents)} document(s) ({len(user_message)} total chars)")
-
-    # Handle AGENTIC mode - use agent loop for complex multi-step tasks
     if router_result.action == RouterAction.AGENTIC:
         log("-" * 60)
         log("STARTING AGENTIC MODE")
         log("-" * 60)
 
-        # Build the task string for the agent.
-        # Use English so tool calls (web search, finance APIs) work reliably,
-        # but append a language instruction so the final answer is in the
-        # user's original language.
         if query_lang != "en":
             agent_task = (
                 f"{english_query}\n\n"
                 f"(Original query in {query_lang}: {data.content})\n"
-                f"IMPORTANT: Respond in {query_lang} (same language as the original query)."
+                f"IMPORTANT: Respond in {query_lang} "
+                f"(same language as the original query)."
             )
         else:
             agent_task = data.content
@@ -413,7 +465,6 @@ User's request: {data.content}"""
             gen_start = time.time()
 
             try:
-                # Create agent loop
                 agent = AgentLoop(
                     ai_service=ai_service,
                     db_session=db,
@@ -422,16 +473,16 @@ User's request: {data.content}"""
                     verbose=True,
                 )
 
-                # Convert history to dict format for agent
-                context = [{"role": msg.role, "content": msg.content} for msg in history]
+                context = [
+                    {"role": msg.role, "content": msg.content}
+                    for msg in history
+                ]
 
-                # Stream agent output (show_steps=False to only show final answer)
-                async for output in agent.run_streaming(agent_task, context, show_steps=False):
+                async for output in agent.run_streaming(
+                    agent_task, context, show_steps=False
+                ):
                     full_response += output
-                    # Escape for SSE format
-                    for line in output.split('\n'):
-                        yield f"data: {line}\n"
-                    yield "\n"
+                    yield f"data: {json.dumps(output)}\n\n"
 
                 gen_elapsed = time.time() - gen_start
                 log("-" * 60)
@@ -439,9 +490,11 @@ User's request: {data.content}"""
                 log("-" * 60)
                 log(f"Response length: {len(full_response)} chars")
                 log(f"Generation time: {gen_elapsed:.2f}s")
-                log(f"Agent steps: {len(agent.trace.steps) if agent.trace else 0}")
+                steps = (
+                    len(agent.trace.steps) if agent.trace else 0
+                )
+                log(f"Agent steps: {steps}")
 
-                # Save assistant message
                 log("Saving assistant message...")
                 await msg_service.add_message(
                     conversation_id=conversation_id,
@@ -449,14 +502,13 @@ User's request: {data.content}"""
                     content=full_response,
                     sources=rag_sources if rag_sources else None,
                 )
-                log("✓ Assistant message saved")
+                log("Assistant message saved")
 
-                # Update conversation title if first message
                 if len(history) <= 1:
                     log("Generating conversation title...")
                     title = await ai_service.generate_title(data.content)
                     await conv_service.update_title(conversation_id, title)
-                    log(f"✓ Title set: {title}")
+                    log(f"Title set: {title}")
 
                 total_elapsed = time.time() - request_start
                 log("=" * 60)
@@ -469,13 +521,18 @@ User's request: {data.content}"""
 
             except Exception as e:
                 import traceback
-                log(f"✗ AGENTIC ERROR: {str(e)}")
+                log(f"AGENTIC ERROR: {str(e)}")
                 log(traceback.format_exc())
                 try:
                     await db.rollback()
                 except Exception:
                     pass
                 yield f"data: [ERROR] {str(e)}\n\n"
+            finally:
+                try:
+                    await db.close()
+                except Exception:
+                    pass
 
         return StreamingResponse(
             generate_agentic(),
@@ -487,7 +544,6 @@ User's request: {data.content}"""
             },
         )
 
-    # Standard AI generation (non-agentic)
     log("-" * 60)
     log("STARTING AI GENERATION")
     log("-" * 60)
@@ -497,7 +553,8 @@ User's request: {data.content}"""
         gen_start = time.time()
         try:
             async for chunk in ai_service.generate_response_stream(
-                history, user_message, image_paths=image_paths
+                history, user_message, image_paths=image_paths,
+                use_agent_model=do_rag,
             ):
                 full_response += chunk
                 yield f"data: {chunk}\n\n"
@@ -509,22 +566,19 @@ User's request: {data.content}"""
             log(f"Response length: {len(full_response)} chars")
             log(f"Generation time: {gen_elapsed:.2f}s")
 
-            # Save assistant message after streaming completes
             log("Saving assistant message...")
             await msg_service.add_message(
                 conversation_id=conversation_id,
                 role="assistant",
                 content=full_response,
             )
-            log("✓ Assistant message saved")
+            log("Assistant message saved")
 
-            # Update conversation title if this is the first message
             if len(history) <= 1:
                 log("Generating conversation title...")
-                # Use original content for title, not the enhanced message
                 title = await ai_service.generate_title(data.content)
                 await conv_service.update_title(conversation_id, title)
-                log(f"✓ Title set: {title}")
+                log(f"Title set: {title}")
 
             total_elapsed = time.time() - request_start
             log("=" * 60)
@@ -536,7 +590,7 @@ User's request: {data.content}"""
             yield "data: [DONE]\n\n"
         except Exception as e:
             import traceback
-            log(f"✗ ERROR: {str(e)}")
+            log(f"ERROR: {str(e)}")
             log(traceback.format_exc())
             try:
                 await db.rollback()

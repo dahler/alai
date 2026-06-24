@@ -63,6 +63,7 @@ class GraphRetrievalService:
         vector_weight: float = 0.6,
         graph_weight: float = 0.4,
         max_graph_hops: int = 2,
+        source_filter: Optional[str] = None,
     ) -> list[RetrievalResult]:
         """
         Perform hybrid search combining vector similarity and graph relationships.
@@ -88,7 +89,7 @@ class GraphRetrievalService:
 
         # Step 1: Vector search
         log("Step 1: Vector similarity search...")
-        vector_results = await self._vector_search(query, user_id, top_k * 2)
+        vector_results = await self._vector_search(query, user_id, top_k * 2, source_filter=source_filter)
         log(f"  Found {len(vector_results)} vector matches")
 
         # Step 2: Extract entities from query
@@ -117,6 +118,14 @@ class GraphRetrievalService:
             vector_weight, graph_weight, top_k
         )
 
+        # Step 6: Apply source_filter post-merge (catches any graph results that slipped through)
+        if source_filter:
+            merged_results = [
+                r for r in merged_results
+                if source_filter.lower() in (r.filename or "").lower()
+            ]
+            log(f"After source_filter '{source_filter}': {len(merged_results)} results remain")
+
         elapsed = time.time() - start_time
         log(f"Hybrid search complete: {len(merged_results)} results in {elapsed:.2f}s")
         log("=" * 50)
@@ -128,6 +137,7 @@ class GraphRetrievalService:
         query: str,
         user_id: Optional[int],
         top_k: int,
+        source_filter: Optional[str] = None,
     ) -> list[RetrievalResult]:
         """Perform vector similarity search."""
         # Generate query embedding
@@ -144,24 +154,28 @@ class GraphRetrievalService:
         else:
             access_filter = DocumentChunk.is_company_doc == True
 
-        # Search chunks
-        result = await self.db.execute(
+        # Search chunks — JOIN with Attachment so we can filter by filename
+        q = (
             select(
                 DocumentChunk,
-                DocumentChunk.embedding.cosine_distance(query_embedding).label("distance")
+                Attachment.original_filename,
+                Attachment.filename,
+                DocumentChunk.embedding.cosine_distance(query_embedding).label("distance"),
             )
+            .join(Attachment, Attachment.id == DocumentChunk.attachment_id)
             .where(access_filter)
-            .order_by("distance")
-            .limit(top_k)
         )
+        if source_filter:
+            q = q.where(Attachment.original_filename.ilike(f"%{source_filter}%"))
+        q = q.order_by("distance").limit(top_k)
+        result = await self.db.execute(q)
 
         results = []
-        for chunk, distance in result.all():
-            # Get attachment info
-            att_result = await self.db.execute(
-                select(Attachment).where(Attachment.id == chunk.attachment_id)
-            )
-            attachment = att_result.scalar_one_or_none()
+        for chunk, original_filename, stored_filename, distance in result.all():
+            attachment = type("_A", (), {
+                "original_filename": original_filename,
+                "filename": stored_filename,
+            })()
 
             similarity = 1 - distance
 

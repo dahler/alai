@@ -41,7 +41,7 @@ ACTION_KEYWORDS = {
         "my files", "my documents", "knowledge base",
         "in the document", "from the document", "in my",
         "from my", "my sop", "company policy", "guidelines",
-        "procedures", "manual", "handbook", "report",
+        "procedures", "manual", "handbook",
         "regulation", "policy", "rule", "according to",
         # Indonesian — document / regulation queries
         "menurut",        # according to
@@ -62,8 +62,6 @@ ACTION_KEYWORDS = {
         "bank indonesia",
         "ojk",
         "dokumen",        # document
-        "laporan",        # report
-        "ringkasan",      # summary
         "rangkuman",      # summary
         "jelaskan",       # explain (often asks about doc content)
         "apa itu",        # what is (domain question)

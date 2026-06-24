@@ -11,7 +11,7 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.DEBUG,
+    echo=False,
     future=True,
     pool_size=10,
     max_overflow=20,

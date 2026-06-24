@@ -4,6 +4,7 @@ Generates downloadable files (DOCX, XLSX, PPTX, PDF, CSV) from structured conten
 """
 
 import csv
+import html
 import io
 import json
 import os
@@ -11,6 +12,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+
+
+def _safe(text) -> str:
+    """Escape XML special chars so reportlab Paragraph doesn't choke on them."""
+    return html.escape(str(text))
 
 # Absolute path anchored to this file's location so it never depends on CWD
 GENERATED_DIR = Path(__file__).parent.parent.parent / "generated_files"
@@ -281,7 +287,7 @@ class FileGenerationService:
         ]
 
         if title:
-            story.append(Paragraph(title, heading_styles[0]))
+            story.append(Paragraph(_safe(title), heading_styles[0]))
             story.append(Spacer(1, 0.5*cm))
 
         for section in sections:
@@ -292,14 +298,14 @@ class FileGenerationService:
             table_data = section.get("table")
 
             if heading:
-                story.append(Paragraph(heading, heading_styles[level - 1]))
+                story.append(Paragraph(_safe(heading), heading_styles[level - 1]))
 
             if content:
-                story.append(Paragraph(content, styles["Normal"]))
+                story.append(Paragraph(_safe(content), styles["Normal"]))
                 story.append(Spacer(1, 0.3*cm))
 
             if bullets:
-                items = [ListItem(Paragraph(str(b), styles["Normal"])) for b in bullets]
+                items = [ListItem(Paragraph(_safe(b), styles["Normal"])) for b in bullets]
                 story.append(ListFlowable(items, bulletType="bullet"))
                 story.append(Spacer(1, 0.3*cm))
 
@@ -308,9 +314,9 @@ class FileGenerationService:
                 rows = table_data.get("rows", [])
                 table_rows = []
                 if headers:
-                    table_rows.append([str(h) for h in headers])
+                    table_rows.append([_safe(h) for h in headers])
                 for row in rows:
-                    table_rows.append([str(v) for v in row])
+                    table_rows.append([_safe(v) for v in row])
                 if table_rows:
                     tbl = Table(table_rows)
                     tbl.setStyle(TableStyle([
@@ -330,10 +336,229 @@ class FileGenerationService:
         return self._save(buf.getvalue(), fname, ".pdf")
 
     # ------------------------------------------------------------------
+    # Template-based fill (style-preserving)
+    # ------------------------------------------------------------------
+
+    def fill_docx_template(self, template_path: str, filename: str, title: str, sections: list) -> dict:
+        """Open an existing DOCX template and insert AI content after matching headings."""
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from copy import deepcopy
+
+        doc = Document(template_path)
+        body = doc.element.body
+
+        def _make_para_elem(text: str, style_name: str = "Normal"):
+            """Create a <w:p> element with the given text and style."""
+            p_elem = OxmlElement("w:p")
+            pPr = OxmlElement("w:pPr")
+            pStyle = OxmlElement("w:pStyle")
+            # Map style name to docx style ID (spaces → no spaces, Word convention)
+            style_id = style_name.replace(" ", "")
+            pStyle.set(qn("w:val"), style_id)
+            pPr.append(pStyle)
+            p_elem.append(pPr)
+            r = OxmlElement("w:r")
+            t = OxmlElement("w:t")
+            t.text = text
+            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            r.append(t)
+            p_elem.append(r)
+            return p_elem
+
+        # Build index: heading text (lower) → body child index
+        body_children = list(body)
+        heading_positions: list[tuple[str, int]] = []
+        for i, child in enumerate(body_children):
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "p":
+                pStyle = child.find(f".//{qn('w:pStyle')}")
+                if pStyle is not None:
+                    style_val = pStyle.get(qn("w:val"), "")
+                    if style_val.startswith("Heading") or style_val.startswith("1") or style_val.startswith("2"):
+                        pass  # handled below
+                # Also check via para style name in document
+            # Use python-docx paragraph objects for style checking
+        para_map: dict[str, int] = {}
+        body_para_indices: dict[int, int] = {}  # para index → body child index
+        para_counter = 0
+        for bi, child in enumerate(body_children):
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "p":
+                if para_counter < len(doc.paragraphs):
+                    para = doc.paragraphs[para_counter]
+                    if para.style.name.startswith("Heading") and para.text.strip():
+                        para_map[para.text.strip().lower()] = bi
+                    body_para_indices[para_counter] = bi
+                    para_counter += 1
+
+        section_map = {s.get("heading", "").strip().lower(): s for s in sections if s.get("heading")}
+
+        # Process in reverse body-position order to avoid index shifts
+        for heading_lower, body_idx in sorted(para_map.items(), key=lambda x: x[1], reverse=True):
+            sec = section_map.get(heading_lower)
+            if not sec:
+                continue
+
+            insert_at = body_idx + 1
+            content_text = sec.get("content", "")
+            bullets = sec.get("bullets", [])
+            table_data = sec.get("table")
+
+            # Build elements in reverse so inserting at same position keeps order
+            elems_to_insert = []
+            if content_text:
+                elems_to_insert.append(_make_para_elem(content_text, "Normal"))
+            for b in bullets:
+                elems_to_insert.append(_make_para_elem(str(b), "ListBullet"))
+
+            if table_data:
+                headers = table_data.get("headers", [])
+                rows = table_data.get("rows", [])
+                num_cols = len(headers) if headers else (len(rows[0]) if rows else 0)
+                if num_cols:
+                    tbl = doc.add_table(rows=1 + len(rows), cols=num_cols)
+                    try:
+                        tbl.style = "TableGrid"
+                    except Exception:
+                        pass
+                    if headers:
+                        for ci, h in enumerate(headers):
+                            cell = tbl.rows[0].cells[ci]
+                            cell.text = str(h)
+                            if cell.paragraphs[0].runs:
+                                cell.paragraphs[0].runs[0].bold = True
+                    for ri, row in enumerate(rows, 1):
+                        for ci, val in enumerate(row):
+                            tbl.rows[ri].cells[ci].text = str(val)
+                    tbl_elem = tbl._element
+                    tbl_elem.getparent().remove(tbl_elem)
+                    elems_to_insert.append(tbl_elem)
+
+            for elem in reversed(elems_to_insert):
+                body.insert(insert_at, elem)
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        fname = filename if filename.endswith(".docx") else filename + ".docx"
+        return self._save(buf.getvalue(), fname, ".docx")
+
+    def fill_xlsx_template(self, template_path: str, filename: str, sheets: list) -> dict:
+        """Open an existing XLSX template and append data rows after the header rows."""
+        import openpyxl
+
+        wb = openpyxl.load_workbook(template_path)
+
+        for sheet_def in sheets:
+            sheet_name = sheet_def.get("name", "")
+            rows = sheet_def.get("rows", [])
+            if not rows:
+                continue
+
+            # Find matching sheet (case-insensitive)
+            ws = None
+            for sn in wb.sheetnames:
+                if sn.lower() == sheet_name.lower():
+                    ws = wb[sn]
+                    break
+            if ws is None:
+                ws = wb.active  # fall back to first sheet
+
+            # Find first empty row (after headers / existing data)
+            start_row = ws.max_row + 1
+            for row in rows:
+                for ci, val in enumerate(row, 1):
+                    ws.cell(row=start_row, column=ci, value=val)
+                start_row += 1
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        fname = filename if filename.endswith(".xlsx") else filename + ".xlsx"
+        return self._save(buf.getvalue(), fname, ".xlsx")
+
+    def fill_pptx_template(self, template_path: str, filename: str, title: str, slides: list) -> dict:
+        """Open an existing PPTX template and fill slide content matching by title."""
+        from pptx import Presentation
+        from pptx.util import Inches
+        from copy import deepcopy
+
+        prs = Presentation(template_path)
+
+        # Build slide title → slide index map
+        slide_map: dict[str, int] = {}
+        for i, slide in enumerate(prs.slides):
+            shape = slide.shapes.title
+            if shape and shape.has_text_frame:
+                slide_map[shape.text_frame.text.strip().lower()] = i
+
+        for slide_def in slides:
+            slide_title = slide_def.get("title", slide_def.get("heading", ""))
+            content = slide_def.get("content", "")
+            bullets = slide_def.get("bullets", [])
+            table_data = slide_def.get("table")
+
+            idx = slide_map.get(slide_title.strip().lower())
+            if idx is None:
+                # Append a new slide using the last layout used
+                layout = prs.slide_layouts[1]
+                slide = prs.slides.add_slide(layout)
+                if slide.shapes.title:
+                    slide.shapes.title.text = slide_title
+            else:
+                slide = prs.slides[idx]
+
+            # Fill the body placeholder
+            body_ph = None
+            for ph in slide.placeholders:
+                if ph.placeholder_format.idx != 0:  # skip title placeholder
+                    body_ph = ph
+                    break
+
+            if body_ph and body_ph.has_text_frame:
+                tf = body_ph.text_frame
+                tf.clear()
+                if content:
+                    tf.text = content
+                for b in bullets:
+                    p = tf.add_paragraph()
+                    p.text = str(b)
+
+            if table_data:
+                headers = table_data.get("headers", [])
+                rows = table_data.get("rows", [])
+                num_cols = len(headers) if headers else (len(rows[0]) if rows else 0)
+                num_rows_total = len(rows) + (1 if headers else 0)
+                if num_cols and num_rows_total:
+                    tbl = slide.shapes.add_table(
+                        num_rows_total, num_cols,
+                        Inches(0.5), Inches(2.5),
+                        prs.slide_width - Inches(1), prs.slide_height - Inches(3.5)
+                    ).table
+                    row_offset = 0
+                    if headers:
+                        for ci, h in enumerate(headers):
+                            tbl.cell(0, ci).text = str(h)
+                            tbl.cell(0, ci).text_frame.paragraphs[0].runs[0].font.bold = True
+                        row_offset = 1
+                    for ri, row in enumerate(rows):
+                        for ci, val in enumerate(row):
+                            tbl.cell(ri + row_offset, ci).text = str(val)
+
+        buf = io.BytesIO()
+        prs.save(buf)
+        fname = filename if filename.endswith(".pptx") else filename + ".pptx"
+        return self._save(buf.getvalue(), fname, ".pptx")
+
+    # ------------------------------------------------------------------
     # Unified dispatcher
     # ------------------------------------------------------------------
 
-    def generate(self, fmt: str, filename: str, content: dict) -> dict:
+    def generate(self, fmt: str, filename: str, content: dict, template_file_path: Optional[str] = None) -> dict:
+        """
+        Dispatch to the right generator. If template_file_path is provided and the
+        file exists, use the style-preserving fill methods instead of generating from scratch.
+        """
         """
         Dispatch to the right generator.
 
@@ -345,6 +570,8 @@ class FileGenerationService:
         title = content.get("title", filename)
         sections = content.get("sections", [])
         sheets = content.get("sheets", [])
+
+        tpl = template_file_path if (template_file_path and Path(template_file_path).exists()) else None
 
         if fmt == "csv":
             # Use first sheet or first section's table
@@ -359,7 +586,6 @@ class FileGenerationService:
 
         elif fmt == "xlsx":
             if not sheets:
-                # Build sheets from sections that have tables
                 sheets = [
                     {
                         "name": sec.get("heading", "Sheet1")[:31] or "Sheet1",
@@ -370,13 +596,19 @@ class FileGenerationService:
                 ]
             if not sheets:
                 sheets = [{"name": "Sheet1", "headers": [], "rows": []}]
+            if tpl and tpl.endswith(".xlsx"):
+                return self.fill_xlsx_template(tpl, filename, sheets)
             return self.generate_excel(filename, sheets, title)
 
         elif fmt == "docx":
+            if tpl and tpl.endswith(".docx"):
+                return self.fill_docx_template(tpl, filename, title, sections)
             return self.generate_docx(filename, title, sections)
 
         elif fmt == "pptx":
             slides = content.get("slides", sections)
+            if tpl and tpl.endswith(".pptx"):
+                return self.fill_pptx_template(tpl, filename, title, slides)
             return self.generate_pptx(filename, title, slides)
 
         elif fmt == "pdf":

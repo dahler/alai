@@ -1,3 +1,7 @@
+import sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from contextlib import asynccontextmanager
 import traceback
 from fastapi import FastAPI, Request
@@ -7,20 +11,36 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.database import create_tables
 # Import models to register them with Base.metadata before create_tables()
-from app.models import User, Conversation, Message, OAuthAccount, Attachment, DocumentChunk, Entity, EntityRelationship, DocumentEntity  # noqa: F401
+from app.models import (  # noqa: F401
+    User, Conversation, Message, OAuthAccount, Attachment,
+    DocumentChunk, DocumentSection, DocumentSummary,
+    Entity, EntityRelationship, DocumentEntity,
+    ReportTemplate, DocumentFolder,
+)
 from app.routers import (
     auth_router, conversations_router, messages_router, uploads_router,
     documents_router, graph_router, agent_router, ai_router, files_router,
+    templates_router, folders_router,
 )
 from app.services.ai import AIService
 from app.services.embedding import EmbeddingService
 from app.router.service import RouterService
 
 
+def _mem_mb() -> int:
+    try:
+        import psutil, os
+        return psutil.Process(os.getpid()).memory_info().rss // (1024 * 1024)
+    except Exception:
+        return -1
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    print(f"[STARTUP] MEM at import: {_mem_mb()} MB")
     await create_tables()
+    print(f"[STARTUP] MEM after create_tables: {_mem_mb()} MB")
 
     # Check Ollama health
     ai_service = AIService()
@@ -28,21 +48,27 @@ async def lifespan(app: FastAPI):
         print(f"Connected to Ollama at {settings.OLLAMA_BASE_URL}")
     else:
         print(f"Warning: Could not connect to Ollama at {settings.OLLAMA_BASE_URL}")
+    print(f"[STARTUP] MEM after ollama health: {_mem_mb()} MB")
 
     # Check Router model health
     router_service = RouterService()
+    router_label = router_service._llm.provider_label
     if await router_service.health_check():
-        print(f"Router model ({router_service.model}) available")
+        print(f"Router provider ({router_label}) available")
     else:
-        print(f"Warning: Router model ({router_service.model}) not available - using fallback")
+        print(f"Warning: Router provider ({router_label}) not available - using fallback")
+    print(f"[STARTUP] MEM after router health: {_mem_mb()} MB")
 
-    # Check Embedding model health
+    # Check Embedding model health and warm it up (loads bge-m3 into VRAM now
+    # so the first document upload doesn't wait for model cold-start).
     embedding_service = EmbeddingService()
+    print(f"Loading embedding model {settings.OLLAMA_EMBEDDING_MODEL} (may take 1-3 min on cold start)...")
     if await embedding_service.health_check():
-        print(f"Embedding model ({settings.OLLAMA_EMBEDDING_MODEL}) available for RAG")
+        print(f"Embedding model ({settings.OLLAMA_EMBEDDING_MODEL}) loaded and ready for RAG")
     else:
         print(f"Warning: Embedding model ({settings.OLLAMA_EMBEDDING_MODEL}) not available")
         print(f"         Pull it with: ollama pull {settings.OLLAMA_EMBEDDING_MODEL}")
+    print(f"[STARTUP] MEM after embedding warmup: {_mem_mb()} MB")
 
     yield
 
@@ -90,6 +116,8 @@ app.include_router(graph_router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
 app.include_router(files_router, prefix="/api")
+app.include_router(templates_router, prefix="/api")
+app.include_router(folders_router, prefix="/api")
 
 
 @app.get("/")

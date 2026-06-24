@@ -53,7 +53,7 @@ class AIService:
         return await self.client.chat(history, system_prompt=system_prompt, images=image_paths, model_override=model_override)
 
     async def generate_response_stream(
-        self, messages: Union[List[Message], List[Dict[str, str]]], user_message: str = None, image_paths: list[str] | None = None
+        self, messages: Union[List[Message], List[Dict[str, str]]], user_message: str = None, image_paths: list[str] | None = None, use_agent_model: bool = False
     ) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response from the AI.
@@ -73,7 +73,8 @@ class AIService:
                 history.append({"role": "user", "content": user_message})
             system_prompt = SYSTEM_PROMPT
 
-        async for chunk in self.client.chat_stream(history, system_prompt=system_prompt, images=image_paths):
+        model_override = settings.OLLAMA_AGENT_MODEL if use_agent_model else None
+        async for chunk in self.client.chat_stream(history, system_prompt=system_prompt, images=image_paths, model_override=model_override):
             yield chunk
 
     async def generate_title(self, first_message: str) -> str:

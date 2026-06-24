@@ -239,6 +239,9 @@ class ToolExecutor:
             "final_answer": self._execute_final_answer,
             "yahoo_finance": self._execute_yahoo_finance,
             "generate_file": self._execute_generate_file,
+            "email_read": self._execute_email_read,
+            "email_send": self._execute_email_send,
+            "email_reply": self._execute_email_reply,
         }
 
         handler = handlers.get(tool_name)
@@ -257,6 +260,7 @@ class ToolExecutor:
 
         query = params.get("query", "")
         top_k = min(params.get("top_k", 5), 10)
+        source_filter = params.get("source_filter") or None
 
         if not self.db_session:
             return {"error": "Database session not available"}
@@ -269,6 +273,7 @@ class ToolExecutor:
                 top_k=top_k,
                 vector_weight=0.6,
                 graph_weight=0.4,
+                source_filter=source_filter,
             )
         except Exception as e:
             await self.db_session.rollback()
@@ -867,10 +872,12 @@ class ToolExecutor:
         except _json.JSONDecodeError as e:
             return {"error": f"Invalid content JSON: {e}"}
 
+        template_file_path = params.get("template_file_path") or None
+
         try:
             svc = FileGenerationService()
             result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: svc.generate(fmt, filename, content)
+                None, lambda: svc.generate(fmt, filename, content, template_file_path)
             )
             return {
                 "file_id": result["file_id"],
@@ -883,3 +890,102 @@ class ToolExecutor:
             }
         except Exception as e:
             return {"error": f"File generation failed: {e}"}
+
+    # -------------------------------------------------------------------------
+    # Email tools (Microsoft Graph via stored OAuth tokens)
+    # -------------------------------------------------------------------------
+
+    async def _execute_email_read(self, params: dict) -> dict:
+        """Read/list/search the user's Outlook email."""
+        from app.services.email_service import EmailService, EmailServiceError
+
+        if not self.db_session or not self.user_id:
+            return {"error": "Email tools require an authenticated session."}
+
+        action = params.get("action", "list").lower()
+        svc = EmailService(self.db_session)
+
+        try:
+            if action == "read":
+                message_id = params.get("message_id", "")
+                if not message_id:
+                    return {"error": "message_id is required for action='read'"}
+                msg = await svc.get_message(self.user_id, message_id)
+                return {"action": "read", "message": msg}
+
+            elif action == "search":
+                query = params.get("query", "")
+                if not query:
+                    return {"error": "query is required for action='search'"}
+                top = int(params.get("top", 10))
+                results = await svc.search_messages(self.user_id, query, top=top)
+                return {"action": "search", "query": query, "messages": results, "count": len(results)}
+
+            else:  # list
+                folder = params.get("folder", "inbox")
+                top = int(params.get("top", 10))
+                messages = await svc.list_messages(self.user_id, folder=folder, top=top)
+                return {"action": "list", "folder": folder, "messages": messages, "count": len(messages)}
+
+        except EmailServiceError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            log(f"email_read error: {e}")
+            return {"error": f"Failed to read email: {e}"}
+
+    async def _execute_email_send(self, params: dict) -> dict:
+        """Send a new email from the user's Outlook account."""
+        from app.services.email_service import EmailService, EmailServiceError
+
+        if not self.db_session or not self.user_id:
+            return {"error": "Email tools require an authenticated session."}
+
+        to_raw = params.get("to", "")
+        subject = params.get("subject", "")
+        body = params.get("body", "")
+        cc_raw = params.get("cc", "")
+
+        if not to_raw or not subject or not body:
+            return {"error": "to, subject, and body are all required."}
+
+        to = [a.strip() for a in to_raw.split(",") if a.strip()]
+        cc = [a.strip() for a in cc_raw.split(",") if a.strip()] if cc_raw else []
+
+        svc = EmailService(self.db_session)
+        try:
+            result = await svc.send_message(
+                self.user_id, to=to, subject=subject, body=body, cc=cc or None,
+                body_type="Text",
+            )
+            return result
+        except EmailServiceError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            log(f"email_send error: {e}")
+            return {"error": f"Failed to send email: {e}"}
+
+    async def _execute_email_reply(self, params: dict) -> dict:
+        """Reply to an existing email."""
+        from app.services.email_service import EmailService, EmailServiceError
+
+        if not self.db_session or not self.user_id:
+            return {"error": "Email tools require an authenticated session."}
+
+        message_id = params.get("message_id", "")
+        body = params.get("body", "")
+        reply_all = bool(params.get("reply_all", False))
+
+        if not message_id or not body:
+            return {"error": "message_id and body are required."}
+
+        svc = EmailService(self.db_session)
+        try:
+            result = await svc.reply_to_message(
+                self.user_id, message_id=message_id, body=body, reply_all=reply_all,
+            )
+            return result
+        except EmailServiceError as e:
+            return {"error": str(e)}
+        except Exception as e:
+            log(f"email_reply error: {e}")
+            return {"error": f"Failed to reply to email: {e}"}
