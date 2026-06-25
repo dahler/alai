@@ -559,6 +559,15 @@ async def send_message_stream(
                 full_response += chunk
                 yield f"data: {chunk}\n\n"
 
+            if not full_response.strip() and do_rag:
+                fallback = (
+                    "Maaf, saya tidak dapat menemukan informasi yang "
+                    "relevan dalam dokumen yang tersedia untuk menjawab "
+                    "pertanyaan ini."
+                )
+                full_response = fallback
+                yield f"data: {fallback}\n\n"
+
             gen_elapsed = time.time() - gen_start
             log("-" * 60)
             log("AI GENERATION COMPLETE")

@@ -71,6 +71,21 @@ async def list_documents(
     }
 
 
+@router.post("/reembed-sections")
+async def reembed_sections(
+    attachment_id: Optional[int] = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Backfill summary_embedding for sections that have none.
+    Pass ?attachment_id=<id> to fix one doc, or omit to fix all.
+    """
+    rag = RAGService(db)
+    result = await rag.reembed_sections(attachment_id=attachment_id)
+    return result
+
+
 @router.post("/upload")
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -495,13 +510,8 @@ async def delete_document(
     if not attachment:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    if attachment.is_company_doc:
-        if not user.is_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Only admins can delete company documents",
-            )
-    elif attachment.user_id != user.id:
+    is_owner = attachment.user_id == user.id
+    if not is_owner and not user.is_admin:
         raise HTTPException(
             status_code=403, detail="You can only delete your own documents"
         )

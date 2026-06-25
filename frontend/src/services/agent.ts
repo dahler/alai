@@ -2,7 +2,7 @@
  * Agent Service - Frontend interface for the agentic AI system
  */
 
-import api from './api'
+import { api } from './api'
 
 export interface Tool {
   name: string

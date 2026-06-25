@@ -17,7 +17,6 @@ Retrieval pipeline:
   5. Expand context with neighbouring chunks
 """
 
-import gc
 import re
 import time
 from typing import Optional
@@ -163,6 +162,19 @@ class RAGService:
         await self.db.flush()  # get section IDs
         stats["sections_created"] = len(section_records)
 
+        # Embed section title + content so section-first retrieval works.
+        # No LLM summarization needed — bge-m3 embeds the raw text directly.
+        sec_texts = [
+            f"{sec.title}\n\n{(sec.content or '')[:800]}"
+            for sec in parsed.sections
+        ]
+        sec_embeddings = await self.embedding.embed_texts(sec_texts)
+        for rec, emb in zip(section_records, sec_embeddings):
+            if emb is not None:
+                rec.summary_embedding = emb
+        del sec_texts, sec_embeddings
+        await self.db.flush()
+
         # Snapshot IDs now while objects are loaded — after any commit()
         # SQLAlchemy expires ORM objects, and accessing .id would trigger
         # a lazy SELECT round-trip per row under memory pressure.
@@ -217,7 +229,6 @@ class RAGService:
         # Free large objects before embedding — parsed.full_markdown and
         # all section content can be several MB for big documents.
         del section_id_map, parsed
-        gc.collect()
         log(
             f"MEM after pending build: {_mem_mb()} MB"
             f"  ({len(pending)} chunks to embed)"
@@ -261,7 +272,6 @@ class RAGService:
             self.db.expire_all()
 
         del pending
-        gc.collect()
         stats["chunks_created"] = chunk_count
         log(f"MEM after embed: {_mem_mb()} MB")
 
@@ -710,6 +720,47 @@ class RAGService:
             expanded.append("\n\n".join(parts))
 
         return expanded
+
+    async def reembed_sections(
+        self, attachment_id: Optional[int] = None
+    ) -> dict:
+        """
+        Backfill summary_embedding for sections that have none.
+
+        Pass attachment_id to fix one document, or None to fix all.
+        """
+        from sqlalchemy import update as sa_update
+
+        q = select(
+            DocumentSection.id,
+            DocumentSection.title,
+            DocumentSection.content,
+        ).where(DocumentSection.summary_embedding.is_(None))
+        if attachment_id is not None:
+            q = q.where(DocumentSection.attachment_id == attachment_id)
+
+        rows = (await self.db.execute(q)).all()
+        if not rows:
+            return {"updated": 0}
+
+        texts = [
+            f"{r.title}\n\n{(r.content or '')[:800]}" for r in rows
+        ]
+        embeddings = await self.embedding.embed_texts(texts)
+
+        updated = 0
+        for row, emb in zip(rows, embeddings):
+            if emb is None:
+                continue
+            await self.db.execute(
+                sa_update(DocumentSection)
+                .where(DocumentSection.id == row.id)
+                .values(summary_embedding=emb)
+            )
+            updated += 1
+
+        await self.db.commit()
+        return {"updated": updated}
 
     async def delete_document_chunks(self, attachment_id: int) -> int:
         result = await self.db.execute(

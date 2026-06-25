@@ -15,7 +15,7 @@ interface ConversationState {
   updateConversationInList: (conversation: Conversation) => void
 }
 
-export const useConversationStore = create<ConversationState>((set, get) => ({
+export const useConversationStore = create<ConversationState>((set) => ({
   conversations: [],
   currentConversationId: null,
   isLoading: false,
