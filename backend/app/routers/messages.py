@@ -430,6 +430,10 @@ async def send_message_stream(
             f"[{s['number']}] {s['filename']}" for s in rag_sources
         )
         user_message = (
+            "IMPORTANT: Answer directly. Do NOT think out loud, narrate "
+            "your reasoning, or say things like 'Let me check', 'Looking "
+            "at the documents', 'Okay', or 'First I need to'. Begin "
+            "immediately with the answer.\n\n"
             "The following information was retrieved from the knowledge base:"
             f"\n\nSources:\n{source_list}"
             f"\n\nRetrieved content:\n{rag_context}"

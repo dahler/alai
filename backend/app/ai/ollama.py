@@ -145,6 +145,15 @@ class OllamaClient:
         log(f"Timeout: {timeout}s")
         log("=" * 50)
 
+        # Reasoning preamble starters — skip until first blank line
+        _REASONING_STARTERS = (
+            "okay", "ok,", "ok.", "let me", "let's", "let us",
+            "i'll", "i will", "i need", "i'm going",
+            "first,", "first i", "first,", "alright",
+            "the user", "looking at", "based on", "to answer",
+            "sure,", "so,", "now,", "well,",
+        )
+
         start_time = time.time()
         token_count = 0
 
@@ -169,6 +178,9 @@ class OllamaClient:
                 first_token_time = None
                 log("✓ Connected! Streaming response...")
                 in_think = False
+                # Preamble filter state
+                preamble_buf = ""
+                preamble_done = False
                 async for line in response.aiter_lines():
                     if line:
                         try:
@@ -188,6 +200,40 @@ class OllamaClient:
                                             content = content.split(
                                                 "</think>"
                                             )[-1]
+                                        else:
+                                            content = ""
+                                    # Preamble filter: skip reasoning
+                                    # narration at the start of the response
+                                    if content and not preamble_done:
+                                        preamble_buf += content
+                                        lower = preamble_buf.lower().lstrip()
+                                        is_reasoning = any(
+                                            lower.startswith(s)
+                                            for s in _REASONING_STARTERS
+                                        )
+                                        if not is_reasoning:
+                                            # Not reasoning — pass through
+                                            preamble_done = True
+                                        elif "\n\n" in preamble_buf:
+                                            # Skip preamble up to paragraph
+                                            content = preamble_buf.split(
+                                                "\n\n", 1
+                                            )[-1]
+                                            preamble_done = True
+                                            preamble_buf = ""
+                                            if content:
+                                                log(
+                                                    "⚠ Stripped reasoning"
+                                                    " preamble"
+                                                )
+                                            else:
+                                                content = ""
+                                        elif len(preamble_buf) > 600:
+                                            # Buffer too large — give up,
+                                            # flush as-is
+                                            content = preamble_buf
+                                            preamble_done = True
+                                            preamble_buf = ""
                                         else:
                                             content = ""
                                     if content:
