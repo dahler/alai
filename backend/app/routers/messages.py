@@ -435,9 +435,6 @@ async def send_message_stream(
             f"\n\nRetrieved content:\n{rag_context}"
             f"\n\n---\n\nUser's question: {data.content}"
             f"\n\n{_RAG_INSTRUCTIONS}"
-            "\n- MARKER: You MUST write the line \"So the final answer is:\""
-            " on its own line immediately before your answer. Everything"
-            " before that line will be hidden from the user."
         )
         log(f"Enhanced message with RAG context ({len(user_message)} chars)")
 
