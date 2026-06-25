@@ -1,4 +1,5 @@
 import json
+import re
 import base64
 import time
 from pathlib import Path
@@ -170,9 +171,9 @@ class OllamaClient:
                 response.raise_for_status()
                 first_token_time = None
                 log("✓ Connected! Streaming response...")
-                in_think = False
-                # Buffer until marker, then stream everything after it.
-                marker_buf = ""
+                # Accumulate the full response, strip all <think>...</think>
+                # blocks with regex, then cut at the marker.
+                full_buf = ""
                 marker_found = False
                 async for line in response.aiter_lines():
                     if line:
@@ -183,55 +184,48 @@ class OllamaClient:
                                 and "content" in data["message"]
                             ):
                                 content = data["message"]["content"]
+                                if content and not marker_found:
+                                    full_buf += content
+                                    # Strip ALL think blocks accumulated so far
+                                    clean = re.sub(
+                                        r"<think>[\s\S]*?</think>",
+                                        "",
+                                        full_buf,
+                                    )
+                                    if _ANSWER_MARKER in clean:
+                                        after = clean.split(
+                                            _ANSWER_MARKER, 1
+                                        )[1].lstrip("\n")
+                                        marker_found = True
+                                        full_buf = ""
+                                        log("⚠ Marker found — streaming")
+                                        content = after
+                                    else:
+                                        content = ""
                                 if content:
-                                    # Strip <think>...</think> blocks
-                                    if "<think>" in content:
-                                        in_think = True
-                                    if in_think:
-                                        if "</think>" in content:
-                                            in_think = False
-                                            content = content.split(
-                                                "</think>"
-                                            )[-1]
-                                        else:
-                                            content = ""
-                                    # Marker filter
-                                    if content and not marker_found:
-                                        marker_buf += content
-                                        if _ANSWER_MARKER in marker_buf:
-                                            after = marker_buf.split(
-                                                _ANSWER_MARKER, 1
-                                            )[1].lstrip("\n")
-                                            marker_found = True
-                                            marker_buf = ""
-                                            log(
-                                                "⚠ Marker found —"
-                                                " streaming answer"
-                                            )
-                                            content = after
-                                        else:
-                                            content = ""
-                                    if content:
-                                        if first_token_time is None:
-                                            first_token_time = time.time()
-                                            ttft = (
-                                                first_token_time
-                                                - start_time
-                                            )
-                                            log(
-                                                f"⚡ First token"
-                                                f" (TTFT: {ttft:.2f}s)"
-                                            )
-                                        token_count += 1
-                                        yield content
+                                    if first_token_time is None:
+                                        first_token_time = time.time()
+                                        ttft = (
+                                            first_token_time - start_time
+                                        )
+                                        log(f"⚡ First token (TTFT: {ttft:.2f}s)")
+                                    token_count += 1
+                                    yield content
                             if data.get("done", False):
-                                # Marker never appeared — flush everything
-                                if marker_buf and not marker_found:
+                                # Marker never appeared — strip think blocks
+                                # and flush whatever is left
+                                if full_buf and not marker_found:
+                                    clean = re.sub(
+                                        r"<think>[\s\S]*?</think>",
+                                        "",
+                                        full_buf,
+                                    ).strip()
                                     log(
                                         "⚠ Marker not found —"
-                                        " flushing full response"
+                                        " flushing cleaned response"
                                     )
-                                    yield marker_buf
+                                    if clean:
+                                        yield clean
                                 elapsed = time.time() - start_time
                                 log(
                                     f"✓ Stream complete:"
