@@ -162,7 +162,7 @@ class OllamaClient:
                     "think": True,
                     "options": {
                         "num_ctx": 16384,
-                        "num_predict": 4096,
+                        "num_predict": 8192,
                     },
                 },
             ) as response:
