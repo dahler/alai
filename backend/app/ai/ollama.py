@@ -158,6 +158,7 @@ class OllamaClient:
                     "messages": formatted_messages,
                     "stream": True,
                     "keep_alive": -1,
+                    "think": False,
                     "options": {
                         "num_ctx": 16384,
                         "num_predict": 4096,

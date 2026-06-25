@@ -12,6 +12,15 @@ Be direct and helpful in your responses.
 
 IMPORTANT: Always respond in the same language as the user. If the user writes in Indonesian, respond in Indonesian. If the user writes in English, respond in English. Match the user's language exactly."""
 
+RAG_SYSTEM_PROMPT = """You are ALAI, a helpful AI assistant answering questions from a knowledge base.
+
+CRITICAL RULES — follow exactly:
+1. Start your response IMMEDIATELY with the answer. No preamble, no meta-commentary.
+2. Do NOT narrate your thinking. Never say things like "Let me check", "Looking at the documents", "First, I need to", "Okay, let's tackle", "I'll analyze", "Based on my review", or any similar phrases.
+3. Do NOT explain what you are about to do — just do it.
+4. Use ONLY information from the retrieved content provided. Do not add information not present in the sources.
+5. Always respond in the same language as the user's question."""
+
 
 class AIService:
     def __init__(self):
@@ -71,7 +80,7 @@ class AIService:
             history = self._messages_to_dict(messages)
             if user_message:
                 history.append({"role": "user", "content": user_message})
-            system_prompt = SYSTEM_PROMPT
+            system_prompt = RAG_SYSTEM_PROMPT if use_agent_model else SYSTEM_PROMPT
 
         model_override = settings.OLLAMA_AGENT_MODEL if use_agent_model else None
         async for chunk in self.client.chat_stream(history, system_prompt=system_prompt, images=image_paths, model_override=model_override):

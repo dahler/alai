@@ -34,7 +34,8 @@ from app.services.summarization_service import SummarizationService
 
 
 def log(message: str) -> None:
-    pass
+    import time
+    print(f"[{time.strftime('%H:%M:%S')}] [RAG] {message}")
 
 
 def _mem_mb() -> int:
@@ -165,7 +166,7 @@ class RAGService:
         # Embed section title + content so section-first retrieval works.
         # No LLM summarization needed — bge-m3 embeds the raw text directly.
         sec_texts = [
-            f"{sec.title}\n\n{(sec.content or '')[:800]}"
+            f"{sec.title}\n\n{(sec.content or '')[:2000]}"
             for sec in parsed.sections
         ]
         sec_embeddings = await self.embedding.embed_texts(sec_texts)
@@ -418,7 +419,7 @@ class RAGService:
         # ------------------------------------------------------------------
         # Step 3: BM25 re-rank
         # ------------------------------------------------------------------
-        rerank_k = len(rows) if was_expanded else top_k
+        rerank_k = min(top_k * 2, len(rows)) if was_expanded else top_k
         rows = _bm25_rerank(query, rows, rerank_k)
 
         # ------------------------------------------------------------------
@@ -744,7 +745,7 @@ class RAGService:
             return {"updated": 0}
 
         texts = [
-            f"{r.title}\n\n{(r.content or '')[:800]}" for r in rows
+            f"{r.title}\n\n{(r.content or '')[:2000]}" for r in rows
         ]
         embeddings = await self.embedding.embed_texts(texts)
 
@@ -1045,7 +1046,7 @@ def _bm25_rerank(
         for i, (chunk, fname, dist) in enumerate(rows):
             vec_score = 1 - dist          # higher = better
             kw_score = bm25_scores[i] / max_bm25
-            score = 0.6 * vec_score + 0.4 * kw_score
+            score = 0.8 * vec_score + 0.2 * kw_score
             combined.append((score, chunk, fname, dist))
 
         combined.sort(key=lambda x: x[0], reverse=True)

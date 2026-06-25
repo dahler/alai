@@ -400,9 +400,13 @@ async def send_message_stream(
                     chunk_text = r['chunk_text'][:4000]
                     rag_chunks.append(f"{header}\n\n{chunk_text}")
                 rag_context = "\n\n---\n\n".join(rag_chunks)
+                # Hard cap: stay within model context window
+                if len(rag_context) > 24000:
+                    rag_context = rag_context[:24000]
                 log(
                     f"Retrieved {len(rag_results)} chunks "
-                    f"from {len(rag_sources)} document(s)"
+                    f"from {len(rag_sources)} document(s) "
+                    f"({len(rag_context)} chars)"
                 )
             else:
                 log("No relevant documents found")
@@ -606,6 +610,11 @@ async def send_message_stream(
             except Exception:
                 pass
             yield f"data: [ERROR] {str(e)}\n\n"
+        finally:
+            try:
+                await db.close()
+            except Exception:
+                pass
 
     return StreamingResponse(
         generate(),

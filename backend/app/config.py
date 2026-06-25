@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # RAG Settings
     RAG_CHUNK_SIZE: int = 500  # Characters per chunk
     RAG_CHUNK_OVERLAP: int = 50  # Overlap between chunks
-    RAG_TOP_K: int = 3  # Number of chunks to retrieve
+    RAG_TOP_K: int = 5  # Number of chunks to retrieve
     RAG_EMBEDDING_DIM: int = 1024  # bge-m3 output dimension
 
     # CORS

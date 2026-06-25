@@ -121,6 +121,26 @@ class RouterService:
         try:
             raw = await self._llm.complete(prompt, _SYSTEM)
             result = self._parse(raw)
+
+            # Safety override: when user has a knowledge base, only allow
+            # agentic if the model is very confident (≥0.85). Otherwise
+            # prefer rag_search — it's safer to search internal docs than
+            # accidentally hitting the web for an internal policy question.
+            if (
+                has_knowledge_base
+                and result.action == RouterAction.AGENTIC
+                and result.confidence < 0.85
+            ):
+                log(
+                    f"Override: agentic({result.confidence:.0%}) → "
+                    "rag_search (kb present, low confidence)"
+                )
+                result = RouterResult(
+                    action=RouterAction.RAG_SEARCH,
+                    confidence=result.confidence,
+                    reason="kb_safety_override",
+                )
+
             elapsed = (time.time() - start) * 1000
             log(
                 f"action={result.action.value} "
@@ -133,11 +153,16 @@ class RouterService:
 
         except Exception as exc:
             elapsed = (time.time() - start) * 1000
-            log(f"Classification error ({exc}) -- defaulting to agentic")
+            log(f"Classification error ({exc}) -- defaulting to rag_search")
             log(f"Time: {elapsed:.0f}ms")
             log("=" * 50)
+            # When knowledge base exists, default to rag_search not agentic
             return RouterResult(
-                action=RouterAction.AGENTIC,
+                action=(
+                    RouterAction.RAG_SEARCH
+                    if has_knowledge_base
+                    else RouterAction.AGENTIC
+                ),
                 confidence=0.5,
                 reason="classification_error_fallback",
             )

@@ -85,7 +85,7 @@ class SmartLLM:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
             resp = await client.chat.completions.create(
-                model="gpt-5.5-mini",
+                model="gpt-5.4-mini",
                 messages=messages,
                 max_tokens=max_tokens,
             )
