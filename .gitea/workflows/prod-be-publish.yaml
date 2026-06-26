@@ -1,0 +1,48 @@
+#
+name: production - be - build, publish and deploy Docker image for backend on cluster
+
+on:
+  push:
+    branches: ['master']
+    # paths:
+    #   - 'backend/**'
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3.6.0
+        with:
+          registry: ${{ vars.REGISTRY_NAME }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5.10.0
+        with:
+          images: ${{ vars.REGISTRY_NAME }}/${{ vars.PROD_BE_IMAGE_NAME }}
+          tags: |
+            type=sha
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Update ArgoCD deployment repo
+        uses: https://github.com/rikhwanto/actions-modules/update-gitops@v1.0.0
+        with:
+          gitops_repo: ${{ vars.PROD_GITOPS_REPO }}
+          deployment_file: ${{ vars.PROD_BE_DEPLOYMENT_FILE_NAME }}
+          image_tag: ${{ steps.meta.outputs.tags }}
+          commit_message: "Alai BE: ${{ gitea.event.commits[0].message }}"
+          gitops_pat: ${{ secrets.ARGOCD_PAT }}
