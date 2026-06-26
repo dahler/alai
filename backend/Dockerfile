@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 USER alaiuser
 # Copy application code
-COPY --chown=1006:2006 app/ ./
+COPY --chown=1006:2006 app/ ./app/
 COPY --chown=1006:2006 alembic/ ./alembic
 COPY --chown=1006:2006 alembic.ini ./
 
