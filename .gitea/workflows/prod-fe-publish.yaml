@@ -4,8 +4,8 @@ name: production - fe - build, publish and deploy Docker image for frontend on c
 on:
   push:
     branches: ['master']
-    # paths:
-    #   - 'frontend/**'
+    paths:
+      - 'frontend/**'
 
 jobs:
   build-and-push-image:
