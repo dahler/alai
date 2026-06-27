@@ -146,25 +146,31 @@ class OllamaClient:
         log(f"Timeout: {timeout}s")
         log("=" * 50)
 
+        supports_think = any(
+            m in model for m in ("qwen3", "deepseek-r1", "qwq")
+        )
         start_time = time.time()
         token_count = 0
+
+        payload = {
+            "model": model,
+            "messages": formatted_messages,
+            "stream": True,
+            "keep_alive": -1,
+            "options": {
+                "num_ctx": 16384,
+                "num_predict": 8192,
+            },
+        }
+        if supports_think:
+            payload["think"] = True
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             log(f"Connecting to {self.base_url}/api/chat ...")
             async with client.stream(
                 "POST",
                 f"{self.base_url}/api/chat",
-                json={
-                    "model": model,
-                    "messages": formatted_messages,
-                    "stream": True,
-                    "keep_alive": -1,
-                    "think": True,
-                    "options": {
-                        "num_ctx": 16384,
-                        "num_predict": 8192,
-                    },
-                },
+                json=payload,
             ) as response:
                 response.raise_for_status()
                 first_token_time = None
