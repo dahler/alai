@@ -55,6 +55,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.agent.executor import ExecutionStatus
 from app.agent.loop import AgentLoop, AgentTrace, _email_draft_cache
+from app.config import settings
 from app.services.smart_llm import SmartLLM
 
 
@@ -138,7 +139,10 @@ class AgentPipeline(AgentLoop):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Agent model (qwen2.5:7b): planning + reflection.
         self._smart = SmartLLM()
+        # Router model (gemma3:1b): fast intent classification.
+        self._router = SmartLLM(ollama_model=settings.OLLAMA_ROUTER_MODEL)
 
     # ── Stage 2: Language Detection ───────────────────────────────────────────
 
@@ -203,7 +207,7 @@ JSON:"""
         ctx_len = len(context) if context else 0
         prompt = self._INTENT_PROMPT.format(task=task, ctx_len=ctx_len)
         try:
-            raw = await self._smart.complete(prompt, self._INTENT_SYSTEM)
+            raw = await self._router.complete(prompt, self._INTENT_SYSTEM)
             m = re.search(r'\{.*\}', raw.strip(), re.DOTALL)
             if m:
                 d = json.loads(m.group())

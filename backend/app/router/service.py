@@ -12,6 +12,7 @@ import re
 import time
 import logging
 
+from app.config import settings
 from app.router.constants import RouterAction, RouterResult
 from app.services.smart_llm import SmartLLM
 
@@ -81,7 +82,12 @@ class RouterService:
     """
 
     def __init__(self) -> None:
-        self._llm = SmartLLM(timeout=30.0)
+        # Routing, intent, and language detection are lightweight JSON tasks —
+        # run them on the small, fast router model (gemma3:1b) rather than the
+        # heavier agent model reserved for planning/content generation.
+        self._llm = SmartLLM(
+            ollama_model=settings.OLLAMA_ROUTER_MODEL, timeout=30.0
+        )
 
     async def classify(
         self,
