@@ -92,6 +92,11 @@ class OllamaClient:
             model = self.vision_model if images else self.text_model
         log(f"Model: {model} | Images: {len(images) if images else 0}")
 
+        # Right-size context (fix #3): only vision needs the large window;
+        # text/agent tasks fit comfortably in 8k. Smaller KV cache = faster
+        # prefill and less memory pressure. keep_alive is omitted so the
+        # server-side OLLAMA_KEEP_ALIVE governs residency (fix #4).
+        num_ctx = 16384 if images else 8192
         start_time = time.time()
         async with httpx.AsyncClient(timeout=120.0) as client:
             log("Sending non-streaming request...")
@@ -101,10 +106,9 @@ class OllamaClient:
                     "model": model,
                     "messages": formatted_messages,
                     "stream": False,
-                    "keep_alive": -1,
                     "options": {
-                        "num_ctx": 16384,
-                        "num_predict": 4096,
+                        "num_ctx": num_ctx,
+                        "num_predict": 2048,
                     },
                 },
             )
@@ -152,14 +156,16 @@ class OllamaClient:
         start_time = time.time()
         token_count = 0
 
+        # Right-size context (fix #3): 16k only for vision; 8k for text/agent
+        # chat. keep_alive omitted so OLLAMA_KEEP_ALIVE governs residency (#4).
+        num_ctx = 16384 if images else 8192
         payload = {
             "model": model,
             "messages": formatted_messages,
             "stream": True,
-            "keep_alive": -1,
             "options": {
-                "num_ctx": 16384,
-                "num_predict": 8192,
+                "num_ctx": num_ctx,
+                "num_predict": 4096,
             },
         }
         if supports_think:

@@ -48,7 +48,6 @@ class EmbeddingService:
                         json={
                             "model": self.model,
                             "input": sub,
-                            "keep_alive": -1,
                         },
                     )
                     response.raise_for_status()

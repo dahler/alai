@@ -105,7 +105,10 @@ class SmartLLM:
                     "model": self._ollama_model,
                     "messages": messages,
                     "stream": False,
-                    "options": {"temperature": 0.1},
+                    # Match ollama.py's 8k window so a model shared across
+                    # code paths keeps one KV-cache size and isn't reloaded
+                    # (fix #3). keep_alive omitted → OLLAMA_KEEP_ALIVE (#4).
+                    "options": {"temperature": 0.1, "num_ctx": 8192},
                 },
             )
             resp.raise_for_status()

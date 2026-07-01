@@ -89,7 +89,6 @@ class SummarizationService:
                         "model": self.model,
                         "prompt": prompt,
                         "stream": False,
-                        "keep_alive": -1,
                         "options": {"temperature": 0.3, "num_predict": 256},
                     },
                 )
