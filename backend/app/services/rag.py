@@ -28,6 +28,7 @@ from app.models.document_chunk import DocumentChunk
 from app.models.document_section import DocumentSection
 from app.models.document_summary import DocumentSummary
 from app.models.attachment import Attachment
+from app.models.document_connection import DocumentConnection
 from app.services.embedding import EmbeddingService
 from app.services.docling_service import DoclingService, ParsedSection
 from app.services.summarization_service import SummarizationService
@@ -227,6 +228,9 @@ class RAGService:
             for raw_text in _chunk_section(sec.content):
                 pending.append((sid, raw_text, heading_ctx, ps, pe))
 
+        # Save full text for connection detection before freeing parsed
+        full_text = parsed.full_markdown or ""
+
         # Free large objects before embedding — parsed.full_markdown and
         # all section content can be several MB for big documents.
         del section_id_map, parsed
@@ -284,6 +288,11 @@ class RAGService:
         attachment.is_company_doc = is_company_doc
         attachment.sections_count = stats["sections_created"]
         attachment.processing_status = "done"
+
+        # Detect explicit cross-document references in the parsed text
+        await self._detect_connections(
+            attachment_id, parsed_text=full_text
+        )
 
         await self.db.commit()
 
@@ -457,11 +466,145 @@ class RAGService:
                 f"{len(expanded_texts[i])} chars expanded)"
             )
 
+        # ------------------------------------------------------------------
+        # Step 6: Augment with chunks from explicitly connected documents
+        # ------------------------------------------------------------------
+        results = await self._augment_with_connections(
+            query_emb, results, user_id, top_k
+        )
+
         return results
 
     # ==================================================================
     # Helpers
     # ==================================================================
+
+    async def _detect_connections(
+        self, attachment_id: int, parsed_text: str
+    ) -> None:
+        """
+        Scan parsed_text for mentions of other document names already in
+        the knowledge base, and store connections in document_connections.
+        """
+        if not parsed_text:
+            return
+
+        # Load all other embedded documents
+        rows = (await self.db.execute(
+            select(Attachment.id, Attachment.original_filename)
+            .where(
+                Attachment.is_embedded.is_(True),
+                Attachment.id != attachment_id,
+            )
+        )).all()
+
+        if not rows:
+            return
+
+        text_lower = parsed_text.lower()
+        found: dict[int, int] = {}  # target_id -> mention_count
+
+        for doc_id, filename in rows:
+            # Match by filename stem (without extension), case-insensitive
+            stem = re.sub(r'\.[^.]+$', '', filename).lower().strip()
+            if len(stem) < 4:
+                continue
+            count = text_lower.count(stem)
+            if count > 0:
+                found[doc_id] = count
+
+        if not found:
+            return
+
+        # Delete existing connections from this source then re-insert
+        await self.db.execute(
+            delete(DocumentConnection).where(
+                DocumentConnection.source_id == attachment_id
+            )
+        )
+        for target_id, mention_count in found.items():
+            self.db.add(DocumentConnection(
+                source_id=attachment_id,
+                target_id=target_id,
+                mention_count=mention_count,
+            ))
+
+        log(
+            f"✓ Document connections detected: "
+            f"{len(found)} reference(s) from attachment {attachment_id}"
+        )
+        await self.db.flush()
+
+    async def _augment_with_connections(
+        self,
+        query_emb: list,
+        results: list[dict],
+        user_id: Optional[int],
+        top_k: int,
+    ) -> list[dict]:
+        """
+        For documents already in results, find explicitly connected documents
+        and fetch their most relevant chunks for the query.
+        """
+        if not results:
+            return results
+
+        source_ids = list({r["attachment_id"] for r in results})
+
+        # Find connected documents not already in results
+        conn_rows = (await self.db.execute(
+            select(DocumentConnection.target_id)
+            .where(DocumentConnection.source_id.in_(source_ids))
+        )).scalars().all()
+
+        already_fetched = set(source_ids)
+        connected_ids = [t for t in set(conn_rows) if t not in already_fetched]
+
+        if not connected_ids:
+            return results
+
+        log(f"Connected docs to augment: {connected_ids}")
+
+        # Fetch top-2 chunks per connected document most relevant to query
+        access = _access_filter(user_id)
+        extra_rows = (await self.db.execute(
+            select(
+                DocumentChunk,
+                Attachment.original_filename,
+                DocumentChunk.embedding.cosine_distance(query_emb).label(
+                    "distance"
+                ),
+            )
+            .join(Attachment, Attachment.id == DocumentChunk.attachment_id)
+            .where(
+                access,
+                DocumentChunk.attachment_id.in_(connected_ids),
+            )
+            .order_by("distance")
+            .limit(top_k)
+        )).all()
+
+        for chunk, filename, distance in extra_rows:
+            results.append({
+                "chunk_id": chunk.id,
+                "chunk_text": chunk.chunk_text or "",
+                "chunk_index": chunk.chunk_index,
+                "heading_context": chunk.heading_context,
+                "page_start": chunk.page_start,
+                "page_end": chunk.page_end,
+                "similarity": round(1 - distance, 4),
+                "attachment_id": chunk.attachment_id,
+                "filename": filename or "Unknown",
+                "is_company_doc": chunk.is_company_doc,
+                "section_id": chunk.section_id,
+                "via_connection": True,
+            })
+            log(
+                f"  [connected] [{1 - distance:.2%}] {filename} "
+                f"chunk {chunk.chunk_index}"
+            )
+
+        return results
 
     async def _expand_section_groups(
         self,

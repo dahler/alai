@@ -18,6 +18,7 @@ from app.models.user import User
 from app.models.attachment import Attachment
 from app.models.document_chunk import DocumentChunk
 from app.models.document_folder import DocumentFolder
+from app.models.document_connection import DocumentConnection
 from app.services.rag import RAGService
 from app.services.docling_service import DoclingService
 from app.services.knowledge_graph import (
@@ -588,3 +589,51 @@ async def search_documents(
         top_k=min(top_k, 20),
     )
     return {"query": query, "results": results, "count": len(results)}
+
+
+@router.get("/connections")
+async def get_document_connections(
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return all explicit document-to-document connections as a graph
+    (nodes + edges) for visualisation.
+    """
+    # All embedded documents the user can see
+    doc_rows = (await db.execute(
+        select(Attachment.id, Attachment.original_filename)
+        .where(
+            Attachment.is_embedded.is_(True),
+            Attachment.processing_status == "done",
+        )
+    )).all()
+
+    nodes = [
+        {"id": doc_id, "label": filename}
+        for doc_id, filename in doc_rows
+    ]
+
+    # All connections between those documents
+    doc_ids = {r[0] for r in doc_rows}
+    conn_rows = (await db.execute(
+        select(
+            DocumentConnection.source_id,
+            DocumentConnection.target_id,
+            DocumentConnection.mention_count,
+        ).where(
+            DocumentConnection.source_id.in_(doc_ids),
+            DocumentConnection.target_id.in_(doc_ids),
+        )
+    )).all()
+
+    edges = [
+        {
+            "source": source_id,
+            "target": target_id,
+            "weight": mention_count,
+        }
+        for source_id, target_id, mention_count in conn_rows
+    ]
+
+    return {"nodes": nodes, "edges": edges}

@@ -11,6 +11,7 @@ from app.models.relationship import EntityRelationship
 from app.models.document_entity import DocumentEntity
 from app.models.report_template import ReportTemplate
 from app.models.document_folder import DocumentFolder
+from app.models.document_connection import DocumentConnection
 
 __all__ = [
     "User",
@@ -26,4 +27,5 @@ __all__ = [
     "DocumentEntity",
     "ReportTemplate",
     "DocumentFolder",
+    "DocumentConnection",
 ]
