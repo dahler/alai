@@ -8,7 +8,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func, delete
 from typing import Optional
 from pydantic import BaseModel
 
@@ -17,6 +17,7 @@ from app.middleware.auth import get_current_user, get_optional_user
 from app.models.user import User
 from app.models.attachment import Attachment
 from app.models.document_chunk import DocumentChunk
+from app.models.document_section import DocumentSection
 from app.models.document_folder import DocumentFolder
 from app.models.document_connection import DocumentConnection
 from app.services.rag import RAGService
@@ -589,6 +590,64 @@ async def search_documents(
         top_k=min(top_k, 20),
     )
     return {"query": query, "results": results, "count": len(results)}
+
+
+@router.post("/redetect-connections")
+async def redetect_connections(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Re-scan all embedded documents and rebuild document_connections.
+    Also backfills doc_title from stored sections for existing documents
+    that were ingested before the title column was added.
+    """
+    attachments = (await db.execute(
+        select(Attachment)
+        .where(
+            Attachment.is_embedded.is_(True),
+            Attachment.processing_status == "done",
+        )
+    )).scalars().all()
+
+    rag = RAGService(db)
+    processed = 0
+
+    for attachment in attachments:
+        # Backfill doc_title from the first stored section if missing
+        if not attachment.doc_title:
+            first_section = (await db.execute(
+                select(DocumentSection.title)
+                .where(
+                    DocumentSection.attachment_id == attachment.id,
+                    DocumentSection.level == 1,
+                )
+                .order_by(DocumentSection.section_index)
+                .limit(1)
+            )).scalar_one_or_none()
+            if first_section:
+                attachment.doc_title = first_section
+
+        chunk_texts = (await db.execute(
+            select(DocumentChunk.chunk_text)
+            .where(DocumentChunk.attachment_id == attachment.id)
+            .order_by(DocumentChunk.chunk_index)
+        )).scalars().all()
+
+        full_text = " ".join(chunk_texts)
+        await rag._detect_connections(attachment.id, full_text)
+        processed += 1
+
+    await db.commit()
+
+    total_connections = (await db.execute(
+        select(func.count()).select_from(DocumentConnection)
+    )).scalar_one()
+
+    return {
+        "processed": processed,
+        "total_connections": total_connections,
+    }
 
 
 @router.get("/connections")

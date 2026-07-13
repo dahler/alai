@@ -149,6 +149,25 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
             Knowledge Graph
           </button>
           <button
+            onClick={() => navigate('/doc-graph')}
+            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-dark-muted hover:text-dark-text hover:bg-dark-chat rounded-lg transition-colors"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"
+              />
+            </svg>
+            Doc Connections
+          </button>
+          <button
             onClick={() => navigate('/templates')}
             className="flex items-center gap-2 w-full px-3 py-2 text-sm text-dark-muted hover:text-dark-text hover:bg-dark-chat rounded-lg transition-colors"
           >

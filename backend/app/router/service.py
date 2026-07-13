@@ -37,7 +37,7 @@ Actions:
                     general knowledge only, no live or external data needed
   rag_search      - question about internal company matters: SOPs, policies,
                     procedures, roles, responsibilities, workflows, products,
-                    or any topic likely covered in the user's uploaded documents
+                    or any topic likely covered in the user's uploaded docs
   agentic         - ONLY when the request explicitly requires one of:
                     * live/current external data (prices, exchange rates,
                       weather, stock quotes, news, economic indicators)
@@ -48,21 +48,35 @@ Actions:
   vision_analysis - user attached an image and wants it analysed
 
 Key rules (follow exactly):
+0. Greetings, small talk, thanks, acknowledgements, or any purely
+   conversational message (hi, hello, thanks, okay, got it, halo, oke,
+   terima kasih, selamat pagi, etc.) -> ALWAYS direct_answer, regardless
+   of knowledge base or attachments.
 1. "generate/create/make/buat + report/Excel/Word/PDF/PowerPoint"
    -> ALWAYS agentic
 2. "latest/current/today/terbaru/sekarang + rate/price/news/kurs"
    -> ALWAYS agentic
-3. If "User has a knowledge base: true":
+3. If "Has file attachments: true", use this decision tree:
+   a. Does the query ask to COMPARE or CHECK the attachment AGAINST
+      internal rules / SOP / policy?
+      YES -> rag_search (needs knowledge base)
+   b. Does the query ask to analyze, find issues, summarize, review,
+      extract, or work with the attachment itself?
+      YES -> direct_answer (model will read the attachment directly)
+   c. When in doubt with an attachment present -> direct_answer.
+   Use rag_search ONLY when comparison against KB is explicit.
+4. If "User has a knowledge base: true" and no attachment:
    - WHO is responsible / siapa yang bertanggung jawab -> rag_search
    - HOW does process X work / bagaimana proses X -> rag_search
    - WHAT is the SOP / procedure / policy -> rag_search
    - Any question about an internal company, its website, its products,
      its teams, or its operations -> rag_search
    - Mentioning a company name or website URL is NOT a reason for agentic
-4. If "User has a knowledge base: true" and unsure -> prefer rag_search
+5. General knowledge questions (math, science, history, coding, grammar,
+   definitions, explanations) are ALWAYS direct_answer, even when the
+   user has a knowledge base. Only route to rag_search if the question
+   is specifically about the user's own documents, company, or industry.
 5. If "User has a knowledge base: false" and unsure -> prefer agentic
-6. "what is X / explain Y / how does Z work" with no live-data need
-   AND knowledge base is false -> direct_answer
 
 Request: {query}
 Has file attachments : {has_attachments}
@@ -116,6 +130,24 @@ class RouterService:
                 reason="image_attached",
             )
 
+        # Hard-coded bypass: pure conversational / greeting messages
+        _GREETINGS = {
+            "hi", "hello", "hey", "halo", "hai", "hei",
+            "thanks", "thank you", "terima kasih", "makasih", "thx",
+            "ok", "okay", "oke", "oks", "got it", "noted",
+            "good morning", "good afternoon", "good evening",
+            "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+            "bye", "goodbye", "sampai jumpa", "dadah",
+        }
+        if query.strip().lower().rstrip("!.,") in _GREETINGS:
+            log("DIRECT (greeting bypass)")
+            log("=" * 50)
+            return RouterResult(
+                action=RouterAction.DIRECT_ANSWER,
+                confidence=0.99,
+                reason="greeting_bypass",
+            )
+
         # LLM classification
         prompt = _PROMPT.format(
             query=query[:600],
@@ -147,6 +179,27 @@ class RouterService:
                     reason="kb_safety_override",
                 )
 
+            # Safety override: attachment present and model chose rag_search
+            # with low confidence. Small models default to rag_search when a
+            # KB exists even when the query is about the attachment itself.
+            # Require ≥0.88 confidence to actually run RAG with an attachment;
+            # below that, trust the attachment and answer directly.
+            if (
+                has_attachments
+                and not has_images
+                and result.action == RouterAction.RAG_SEARCH
+                and result.confidence < 0.88
+            ):
+                log(
+                    f"Override: rag_search({result.confidence:.0%}) → "
+                    "direct_answer (attachment present, confidence < 0.88)"
+                )
+                result = RouterResult(
+                    action=RouterAction.DIRECT_ANSWER,
+                    confidence=result.confidence,
+                    reason="attachment_low_confidence_override",
+                )
+
             elapsed = (time.time() - start) * 1000
             log(
                 f"action={result.action.value} "
@@ -159,16 +212,11 @@ class RouterService:
 
         except Exception as exc:
             elapsed = (time.time() - start) * 1000
-            log(f"Classification error ({exc}) -- defaulting to rag_search")
+            log(f"Classification error ({exc}) -- defaulting to direct_answer")
             log(f"Time: {elapsed:.0f}ms")
             log("=" * 50)
-            # When knowledge base exists, default to rag_search not agentic
             return RouterResult(
-                action=(
-                    RouterAction.RAG_SEARCH
-                    if has_knowledge_base
-                    else RouterAction.AGENTIC
-                ),
+                action=RouterAction.DIRECT_ANSWER,
                 confidence=0.5,
                 reason="classification_error_fallback",
             )

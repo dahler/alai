@@ -91,6 +91,22 @@ export interface GraphStats {
   relationships_by_type: Record<string, number>
 }
 
+export interface DocGraphNode {
+  id: number
+  label: string
+}
+
+export interface DocGraphEdge {
+  source: number
+  target: number
+  weight: number
+}
+
+export interface DocGraphData {
+  nodes: DocGraphNode[]
+  edges: DocGraphEdge[]
+}
+
 export const documentsService = {
   async list(): Promise<DocumentListResponse> {
     const response = await api.get('/documents')
@@ -215,6 +231,16 @@ export const documentsService = {
 
   async getRelatedDocuments(documentId: number): Promise<any> {
     const response = await api.get(`/graph/documents/${documentId}/related`)
+    return response.data
+  },
+
+  async getConnections(): Promise<DocGraphData> {
+    const response = await api.get('/documents/connections')
+    return response.data
+  },
+
+  async redetectConnections(): Promise<{ processed: number; total_connections: number }> {
+    const response = await api.post('/documents/redetect-connections')
     return response.data
   },
 }

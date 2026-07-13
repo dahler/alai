@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Boolean, func
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Boolean, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import TYPE_CHECKING, List, Optional
 
@@ -52,6 +52,7 @@ class Attachment(Base):
 
     filename: Mapped[str] = mapped_column(String(255))
     original_filename: Mapped[str] = mapped_column(String(255))
+    doc_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     content_type: Mapped[str] = mapped_column(String(100))
     file_size: Mapped[int] = mapped_column(Integer)
     file_path: Mapped[str] = mapped_column(String(500))

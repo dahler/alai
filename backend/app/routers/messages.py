@@ -64,6 +64,61 @@ def log(message: str):
     print(f"[{timestamp}] [CHAT] {message}")
 
 
+# Characters available for input before output starts getting squeezed.
+# num_ctx=16384 tokens × 4 chars/token = 65536 total chars.
+# Reserve ~8192 tokens (32768 chars) for output, ~2000 chars for overhead
+# (system prompt + history + question + instructions).
+_MAX_INPUT_CHARS = 30000
+_LARGE_DOC_THRESHOLD = 12_000  # chars — above this, analyze in chunks
+_CHUNK_SIZE = 8_000             # chars per analysis chunk
+
+
+def _split_doc_chunks(text: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:
+    """Split text at paragraph boundaries into chunks ≤ chunk_size chars."""
+    if len(text) <= chunk_size:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        if end < len(text):
+            split = text.rfind('\n\n', start, end)
+            if split <= start:
+                split = text.rfind('\n', start, end)
+            if split <= start:
+                split = end
+        else:
+            split = end
+        chunk = text[start:split].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = max(split + 1, start + 1)
+    return chunks
+
+
+async def _focus_extract(
+    ai_service: AIService,
+    doc_text: str,
+    query: str,
+) -> str:
+    """
+    Make a preliminary LLM call to extract only the sections of `doc_text`
+    that are relevant to `query`. Used when the combined context (attachment
+    + RAG) would exceed the model's input budget.
+    """
+    prompt = (
+        f"From the document below, extract ONLY the passages relevant to "
+        f"this question: {query}\n\n"
+        f"Keep the original wording. Be concise. "
+        f"If nothing is relevant, say 'No relevant content found.'\n\n"
+        f"{doc_text}"
+    )
+    result = await ai_service.generate_response(
+        [{"role": "user", "content": prompt}]
+    )
+    return f"[Relevant excerpts extracted]\n{result}"
+
+
 def format_message_response(message: Message) -> dict:
     """Format message with attachments for response"""
     attachments = []
@@ -232,7 +287,7 @@ async def send_message_stream(
                 log("     Extracting text...")
                 text = await doc_service.extract_text(att.file_path)
                 if text:
-                    text = doc_service.truncate_text(text, max_chars=12000)
+                    text = doc_service.truncate_text(text, max_chars=80000)
                     document_contents.append(
                         f"=== Document: {att.original_filename} ===\n{text}"
                     )
@@ -282,11 +337,7 @@ async def send_message_stream(
     rag_context = ""
     rag_sources: list[dict] = []
 
-    # Also run RAG for direct_answer when the user has a knowledge base
-    do_rag = router_result.action == RouterAction.RAG_SEARCH or (
-        has_knowledge_base
-        and router_result.action == RouterAction.DIRECT_ANSWER
-    )
+    do_rag = router_result.action == RouterAction.RAG_SEARCH
 
     if do_rag:
         log("-" * 60)
@@ -424,8 +475,57 @@ async def send_message_stream(
     log(f"Loaded {len(history)} message(s) for context")
 
     user_message = data.content
+    doc_chunks: list[str] = []
 
-    if rag_context:
+    # If attachment + RAG combined would overflow the input budget, run a
+    # focused extraction pass on each attachment first so only the sections
+    # relevant to the user's query are kept.
+    # Only applies when BOTH are present — pure large-document queries are
+    # handled by the chunked analysis path below.
+    if document_contents and rag_context:
+        total_chars = (
+            sum(len(d) for d in document_contents) + len(rag_context)
+        )
+        if total_chars > _MAX_INPUT_CHARS:
+            log(
+                f"Context too large ({total_chars} chars) — "
+                "extracting relevant sections from attachment(s)..."
+            )
+            extracted = []
+            for doc in document_contents:
+                focused = await _focus_extract(
+                    ai_service, doc, data.content
+                )
+                extracted.append(focused)
+                log(
+                    f"  Extracted {len(focused)} chars "
+                    f"(was {len(doc)} chars)"
+                )
+            document_contents = extracted
+
+    if rag_context and document_contents:
+        # Both an attached document AND knowledge-base results — combine them
+        doc_text = "\n\n".join(document_contents)
+        source_list = "\n".join(
+            f"[{s['number']}] {s['filename']}" for s in rag_sources
+        )
+        user_message = (
+            "The user has attached the following document(s) for analysis:"
+            f"\n\n{doc_text}"
+            "\n\n---\n\n"
+            "The following reference material was retrieved from the"
+            " knowledge base:"
+            f"\n\nSources:\n{source_list}"
+            f"\n\nRetrieved content:\n{rag_context}"
+            f"\n\n---\n\nUser's question: {data.content}"
+            f"\n\n{_RAG_INSTRUCTIONS}"
+        )
+        log(
+            f"Enhanced message with attachment + RAG context "
+            f"({len(user_message)} chars)"
+        )
+
+    elif rag_context:
         source_list = "\n".join(
             f"[{s['number']}] {s['filename']}" for s in rag_sources
         )
@@ -439,15 +539,26 @@ async def send_message_stream(
         log(f"Enhanced message with RAG context ({len(user_message)} chars)")
 
     elif document_contents:
-        doc_text = "\n\n".join(document_contents)
-        user_message = (
-            f"The user has attached the following document(s):\n\n"
-            f"{doc_text}\n\nUser's request: {data.content}"
-        )
-        log(
-            f"Enhanced message with {len(document_contents)} document(s) "
-            f"({len(user_message)} total chars)"
-        )
+        total_doc_chars = sum(len(d) for d in document_contents)
+        if total_doc_chars > _LARGE_DOC_THRESHOLD and not image_paths:
+            # Large document: analyze section-by-section in generate().
+            # Don't build a single oversized user_message here.
+            doc_chunks = _split_doc_chunks("\n\n".join(document_contents))
+            log(
+                f"Large document ({total_doc_chars} chars) → "
+                f"{len(doc_chunks)} chunk(s) for analysis"
+            )
+        else:
+            doc_chunks = []
+            doc_text = "\n\n".join(document_contents)
+            user_message = (
+                f"The user has attached the following document(s):\n\n"
+                f"{doc_text}\n\nUser's request: {data.content}"
+            )
+            log(
+                f"Enhanced message with {len(document_contents)} document(s) "
+                f"({len(user_message)} total chars)"
+            )
 
     if router_result.action == RouterAction.AGENTIC:
         log("-" * 60)
@@ -556,12 +667,40 @@ async def send_message_stream(
         full_response = ""
         gen_start = time.time()
         try:
-            async for chunk in ai_service.generate_response_stream(
-                history, user_message, image_paths=image_paths,
-                use_agent_model=do_rag,
-            ):
-                full_response += chunk
-                yield f"data: {chunk}\n\n"
+            if doc_chunks:
+                # Large document: stream analysis chunk by chunk
+                n = len(doc_chunks)
+                log(f"Chunked analysis: {n} section(s)")
+                intro = f"*Analyzing document in {n} part(s)...*\n\n"
+                full_response += intro
+                yield f"data: {intro}\n\n"
+
+                for i, chunk_text in enumerate(doc_chunks, 1):
+                    header = f"---\n\n**Part {i} of {n}**\n\n"
+                    full_response += header
+                    for line in header.splitlines(keepends=True):
+                        yield f"data: {line}\n\n"
+
+                    chunk_prompt = (
+                        f"Document section ({i} of {n}):\n\n"
+                        f"{chunk_text}\n\n"
+                        f"User's task: {data.content}\n\n"
+                        "Analyze ONLY this section. Be specific and thorough."
+                    )
+                    async for token in ai_service.generate_response_stream(
+                        [], chunk_prompt
+                    ):
+                        full_response += token
+                        yield f"data: {token}\n\n"
+
+                    yield "data: \n\n"
+            else:
+                async for chunk in ai_service.generate_response_stream(
+                    history, user_message, image_paths=image_paths,
+                    use_agent_model=do_rag,
+                ):
+                    full_response += chunk
+                    yield f"data: {chunk}\n\n"
 
             if not full_response.strip() and do_rag:
                 fallback = (

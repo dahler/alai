@@ -57,6 +57,21 @@ _CHUNK_MIN_CHARS = _TARGET_TOKENS_MIN * _CHARS_PER_TOKEN   # 2000
 _CHUNK_OVERLAP_CHARS = 200
 
 
+def _title_ngrams(title: str, window: int = 5) -> list[str]:
+    """
+    Build sliding n-gram phrases from a document title for citation matching.
+
+    A 5-word window from "Bank Indonesia Regulation Number 2 of 2024
+    concerning Information System Security" produces phrases like
+    "regulation number 2 of 2024" which will match the citation text
+    regardless of surrounding words.
+    """
+    words = re.findall(r'[\w]+', title.lower())
+    if len(words) <= window:
+        return [' '.join(words)] if len(words) >= 3 else []
+    return [' '.join(words[i: i + window]) for i in range(len(words) - window + 1)]
+
+
 class RAGService:
     """Structure-aware RAG: ingest, embed, and retrieve documents."""
 
@@ -228,8 +243,9 @@ class RAGService:
             for raw_text in _chunk_section(sec.content):
                 pending.append((sid, raw_text, heading_ctx, ps, pe))
 
-        # Save full text for connection detection before freeing parsed
+        # Save full text and title for connection detection before freeing parsed
         full_text = parsed.full_markdown or ""
+        doc_title = parsed.title or ""
 
         # Free large objects before embedding — parsed.full_markdown and
         # all section content can be several MB for big documents.
@@ -288,6 +304,8 @@ class RAGService:
         attachment.is_company_doc = is_company_doc
         attachment.sections_count = stats["sections_created"]
         attachment.processing_status = "done"
+        if doc_title:
+            attachment.doc_title = doc_title
 
         # Detect explicit cross-document references in the parsed text
         await self._detect_connections(
@@ -483,15 +501,17 @@ class RAGService:
         self, attachment_id: int, parsed_text: str
     ) -> None:
         """
-        Scan parsed_text for mentions of other document names already in
-        the knowledge base, and store connections in document_connections.
+        Scan parsed_text for references to other documents using title-based
+        n-gram matching. For each other embedded document, generates 5-word
+        sliding windows from its stored title and checks if any window appears
+        verbatim in the text. Falls back to filename-stem matching for docs
+        without a stored title.
         """
         if not parsed_text:
             return
 
-        # Load all other embedded documents
         rows = (await self.db.execute(
-            select(Attachment.id, Attachment.original_filename)
+            select(Attachment.id, Attachment.original_filename, Attachment.doc_title)
             .where(
                 Attachment.is_embedded.is_(True),
                 Attachment.id != attachment_id,
@@ -504,19 +524,25 @@ class RAGService:
         text_lower = parsed_text.lower()
         found: dict[int, int] = {}  # target_id -> mention_count
 
-        for doc_id, filename in rows:
-            # Match by filename stem (without extension), case-insensitive
-            stem = re.sub(r'\.[^.]+$', '', filename).lower().strip()
-            if len(stem) < 4:
-                continue
-            count = text_lower.count(stem)
+        for doc_id, filename, doc_title in rows:
+            count = 0
+
+            if doc_title and len(doc_title) >= 10:
+                # Title-based: sliding 5-word n-gram match
+                phrases = _title_ngrams(doc_title, window=5)
+                count = sum(text_lower.count(p) for p in phrases)
+            else:
+                # Fallback: filename stem match
+                stem = re.sub(r'\.[^.]+$', '', filename).lower().strip()
+                if len(stem) >= 4:
+                    count = text_lower.count(stem)
+
             if count > 0:
                 found[doc_id] = count
 
         if not found:
             return
 
-        # Delete existing connections from this source then re-insert
         await self.db.execute(
             delete(DocumentConnection).where(
                 DocumentConnection.source_id == attachment_id

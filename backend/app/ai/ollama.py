@@ -108,7 +108,7 @@ class OllamaClient:
                     "stream": False,
                     "options": {
                         "num_ctx": num_ctx,
-                        "num_predict": 2048,
+                        "num_predict": 4096,
                     },
                 },
             )
@@ -158,14 +158,14 @@ class OllamaClient:
 
         # Right-size context (fix #3): 16k only for vision; 8k for text/agent
         # chat. keep_alive omitted so OLLAMA_KEEP_ALIVE governs residency (#4).
-        num_ctx = 16384 if images else 8192
+        num_ctx = 32768 if images else 16384
         payload = {
             "model": model,
             "messages": formatted_messages,
             "stream": True,
             "options": {
                 "num_ctx": num_ctx,
-                "num_predict": 4096,
+                "num_predict": 8192,
             },
         }
         if supports_think:
