@@ -97,6 +97,64 @@ def _split_doc_chunks(text: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:
     return chunks
 
 
+import re as _re
+
+# Words that signal the user wants the full document covered, not a
+# specific section search.
+_COMPREHENSIVE_WORDS = {
+    # English
+    "all", "each", "every", "entire", "whole", "throughout", "complete",
+    "full", "sections", "parts", "everything", "comprehensive",
+    # Indonesian
+    "semua", "setiap", "seluruh", "keseluruhan", "masing-masing",
+    "tiap", "komprehensif", "menyeluruh", "bagian-bagian",
+}
+
+# Stop words excluded from keyword scoring
+_STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "have",
+    "has", "had", "do", "does", "did", "will", "would", "could", "should",
+    "may", "might", "can", "in", "of", "to", "for", "and", "or", "but",
+    "on", "at", "by", "me", "my", "tell", "give", "show", "what", "how",
+    "about", "this", "that", "it", "i", "you", "we", "with", "from",
+    # Indonesian common words
+    "yang", "dan", "di", "ke", "dari", "dengan", "untuk", "pada",
+    "ini", "itu", "ada", "tidak", "bisa", "akan", "sudah", "saya",
+    "apa", "bagaimana", "berapa", "jelaskan", "ceritakan",
+}
+
+
+def _is_comprehensive_query(query: str) -> bool:
+    """Return True when the query needs all chunks (e.g. 'find all issues')."""
+    words = set(_re.findall(r'\w+', query.lower()))
+    return bool(words & _COMPREHENSIVE_WORDS)
+
+
+def _select_relevant_chunks(
+    query: str,
+    chunks: list[str],
+    top_k: int = 3,
+) -> list[int]:
+    """
+    Return indices of the top_k chunks most relevant to query using
+    keyword-overlap scoring. Falls back to first top_k if no matches.
+    """
+    query_words = set(_re.findall(r'\w+', query.lower())) - _STOP_WORDS
+    if not query_words:
+        return list(range(min(top_k, len(chunks))))
+
+    scores: list[tuple[int, int]] = []
+    for i, chunk in enumerate(chunks):
+        chunk_words = set(_re.findall(r'\w+', chunk.lower()))
+        overlap = len(query_words & chunk_words)
+        scores.append((i, overlap))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    top = [i for i, s in scores[:top_k] if s > 0]
+    # If nothing matched at all, fall back to first top_k chunks
+    return top if top else list(range(min(top_k, len(chunks))))
+
+
 async def _focus_extract(
     ai_service: AIService,
     doc_text: str,
@@ -767,19 +825,53 @@ async def send_message_stream(
                     )
 
                 n = len(doc_chunks)
-                log(f"Chunked analysis: {n} section(s)")
-                intro = f"*Analyzing document in {n} part(s)...*\n\n"
+
+                # Route: comprehensive query → all chunks,
+                #        specific query   → top relevant chunks only
+                if _is_comprehensive_query(data.content):
+                    active_indices = list(range(n))
+                    log(f"Comprehensive query — iterating all {n} chunk(s)")
+                else:
+                    active_indices = _select_relevant_chunks(
+                        data.content, doc_chunks, top_k=3
+                    )
+                    # Sort so chunks appear in document order
+                    active_indices.sort()
+                    log(
+                        f"Specific query — using chunk(s) "
+                        f"{[i+1 for i in active_indices]} of {n}"
+                    )
+
+                active_chunks = [(i, doc_chunks[i]) for i in active_indices]
+                total = len(active_chunks)
+
+                if total < n:
+                    intro = (
+                        f"*Searching {n} document sections — "
+                        f"found {total} relevant section(s)...*\n\n"
+                    )
+                else:
+                    intro = (
+                        f"*Analyzing document in {n} part(s)...*\n\n"
+                    )
                 full_response += intro
                 yield f"data: {intro}\n\n"
 
-                for i, chunk_text in enumerate(doc_chunks, 1):
-                    header = f"---\n\n**Part {i} of {n}**\n\n"
+                for seq, (orig_i, chunk_text) in enumerate(active_chunks, 1):
+                    if total < n:
+                        header = (
+                            f"---\n\n"
+                            f"**Section {seq} of {total}"
+                            f" (part {orig_i + 1} of {n})**\n\n"
+                        )
+                    else:
+                        header = f"---\n\n**Part {orig_i + 1} of {n}**\n\n"
                     full_response += header
                     for line in header.splitlines(keepends=True):
                         yield f"data: {line}\n\n"
 
                     chunk_prompt = (
-                        f"Document section ({i} of {n}):\n\n"
+                        f"Document section ({orig_i + 1} of {n}):\n\n"
                         f"{chunk_text}\n\n"
                         f"User's task: {data.content}\n\n"
                         "Address ONLY this section. Be specific and thorough."
