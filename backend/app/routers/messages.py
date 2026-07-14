@@ -706,7 +706,31 @@ async def send_message_stream(
         gen_start = time.time()
         try:
             if doc_chunks:
-                # Large document: stream analysis chunk by chunk
+                # Large document: stream analysis chunk by chunk.
+                # Build condensed history so the LLM knows what was said in
+                # previous turns (e.g. "find issues" → "fix them all").
+                # Truncate long assistant responses to avoid blowing up the
+                # per-chunk context, but keep enough to be meaningful.
+                _MAX_ASST_CHARS = 6000
+                chunk_history_base = []
+                for msg in history:
+                    role = (
+                        msg.role if hasattr(msg, 'role') else msg['role']
+                    )
+                    content = (
+                        msg.content
+                        if hasattr(msg, 'content')
+                        else msg['content']
+                    )
+                    if role == 'assistant' and len(content) > _MAX_ASST_CHARS:
+                        content = (
+                            content[:_MAX_ASST_CHARS]
+                            + "\n...[previous response truncated]"
+                        )
+                    chunk_history_base.append(
+                        {"role": role, "content": content}
+                    )
+
                 n = len(doc_chunks)
                 log(f"Chunked analysis: {n} section(s)")
                 intro = f"*Analyzing document in {n} part(s)...*\n\n"
@@ -723,10 +747,13 @@ async def send_message_stream(
                         f"Document section ({i} of {n}):\n\n"
                         f"{chunk_text}\n\n"
                         f"User's task: {data.content}\n\n"
-                        "Analyze ONLY this section. Be specific and thorough."
+                        "Address ONLY this section. Be specific and thorough."
                     )
+                    chunk_messages = chunk_history_base + [
+                        {"role": "user", "content": chunk_prompt}
+                    ]
                     async for token in ai_service.generate_response_stream(
-                        [], chunk_prompt
+                        chunk_messages
                     ):
                         full_response += token
                         yield f"data: {token}\n\n"
