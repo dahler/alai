@@ -742,9 +742,13 @@ async def send_message_stream(
                 # previous turns (e.g. "find issues" → "fix them all").
                 # Truncate long assistant responses to avoid blowing up the
                 # per-chunk context, but keep enough to be meaningful.
+                # history[-1] is the current user message (saved before
+                # get_recent_context). Exclude it — the chunk prompt IS the
+                # effective current user message. Including it would create
+                # two consecutive user messages and confuse the LLM.
                 _MAX_ASST_CHARS = 6000
                 chunk_history_base = []
-                for msg in history:
+                for msg in history[:-1]:
                     role = (
                         msg.role if hasattr(msg, 'role') else msg['role']
                     )
