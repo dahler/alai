@@ -1,3 +1,4 @@
+import re as _re
 import time
 import json
 from fastapi import (
@@ -97,17 +98,34 @@ def _split_doc_chunks(text: str, chunk_size: int = _CHUNK_SIZE) -> list[str]:
     return chunks
 
 
-import re as _re
-
 # Words that signal the user wants the full document covered, not a
 # specific section search.
 _COMPREHENSIVE_WORDS = {
-    # English
+    # English — scope / quantity
     "all", "each", "every", "entire", "whole", "throughout", "complete",
     "full", "sections", "parts", "everything", "comprehensive",
-    # Indonesian
+    # English — listing / analysis tasks that span the whole doc
+    "list", "document", "report", "inconsistencies", "inconsistency",
+    "contradictions", "contradiction", "issues", "problems", "errors",
+    "findings", "summary", "overview",
+    # Indonesian — scope / quantity
     "semua", "setiap", "seluruh", "keseluruhan", "masing-masing",
     "tiap", "komprehensif", "menyeluruh", "bagian-bagian",
+    # Indonesian — listing / analysis tasks
+    "daftar",         # list
+    "bagian",         # sections / parts
+    "dokumen",        # document
+    "laporan",        # report
+    "bertentangan",   # contradictory / conflicting
+    "inkonsistensi",  # inconsistency
+    "ketidaksesuaian",  # discrepancy
+    "masalah",        # problems / issues
+    "kesalahan",      # errors
+    "temuan",         # findings
+    "ringkasan",      # summary
+    "gambaran",       # overview
+    "perbaikan",      # improvements / fixes
+    "rekomendasi",    # recommendations
 }
 
 # Stop words excluded from keyword scoring
