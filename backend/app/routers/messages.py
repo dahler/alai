@@ -342,35 +342,37 @@ async def send_message_stream(
             f"{len(attachment_chunk_map)} chunked doc(s)"
         )
 
-    # No attachment on this message — check if a recent message in this
-    # conversation had chunked documents and reuse them automatically.
-    # This lets users ask follow-up questions without re-uploading the file.
+    # No attachment on this message — find the most recent chunked attachment
+    # in this conversation and reuse its DB chunks automatically.
     if not data.attachment_ids and not image_paths and not document_contents:
-        from sqlalchemy import func as _func
         from app.models.message import Message as _Msg
-        recent_chunks_q = await db.execute(
-            select(AttachmentChunk)
+        # Step 1: find the attachment_id from the most recent message that
+        # had stored chunks (single row lookup, properly ordered).
+        latest_att_row = await db.execute(
+            select(AttachmentChunk.attachment_id)
             .join(Attachment, AttachmentChunk.attachment_id == Attachment.id)
             .join(_Msg, Attachment.message_id == _Msg.id)
             .where(_Msg.conversation_id == conversation_id)
-            .order_by(
-                _Msg.created_at.desc(),
-                AttachmentChunk.chunk_index.asc(),
-            )
+            .order_by(_Msg.created_at.desc())
+            .limit(1)
         )
-        recent_chunks = recent_chunks_q.scalars().all()
-        if recent_chunks:
-            # Group by attachment_id preserving the order from the latest msg
-            seen_att: dict[int, list[str]] = {}
-            for c in recent_chunks:
-                seen_att.setdefault(c.attachment_id, []).append(c.chunk_text)
-            # Use only the most recently uploaded attachment
-            latest_att_id = next(iter(seen_att))
-            attachment_chunk_map[latest_att_id] = seen_att[latest_att_id]
-            log(
-                f"Auto-reusing {len(seen_att[latest_att_id])} chunk(s) "
-                f"from attachment {latest_att_id} (no file attached)"
+        latest_att_id = latest_att_row.scalar()
+        if latest_att_id:
+            # Step 2: load all chunks for that attachment in index order.
+            chunks_q = await db.execute(
+                select(AttachmentChunk)
+                .where(AttachmentChunk.attachment_id == latest_att_id)
+                .order_by(AttachmentChunk.chunk_index.asc())
             )
+            reused = chunks_q.scalars().all()
+            if reused:
+                attachment_chunk_map[latest_att_id] = [
+                    c.chunk_text for c in reused
+                ]
+                log(
+                    f"Auto-reusing {len(reused)} chunk(s) from "
+                    f"attachment {latest_att_id} (no file attached)"
+                )
 
     # Check if this user has any documents in their knowledge base
     from app.models.document_chunk import DocumentChunk
@@ -547,11 +549,10 @@ async def send_message_stream(
     log(f"Loaded {len(history)} message(s) for context")
 
     user_message = data.content
-    # All chunks across all chunked attachments, in order
+    # Collect all chunks — works for both explicit attachments and auto-reuse
     doc_chunks: list[str] = []
-    for att_id in data.attachment_ids:
-        if att_id in attachment_chunk_map:
-            doc_chunks.extend(attachment_chunk_map[att_id])
+    for chunks in attachment_chunk_map.values():
+        doc_chunks.extend(chunks)
 
     # If attachment + RAG combined would overflow the input budget, run a
     # focused extraction pass on each attachment first so only the sections
