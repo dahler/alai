@@ -342,6 +342,36 @@ async def send_message_stream(
             f"{len(attachment_chunk_map)} chunked doc(s)"
         )
 
+    # No attachment on this message — check if a recent message in this
+    # conversation had chunked documents and reuse them automatically.
+    # This lets users ask follow-up questions without re-uploading the file.
+    if not data.attachment_ids and not image_paths and not document_contents:
+        from sqlalchemy import func as _func
+        from app.models.message import Message as _Msg
+        recent_chunks_q = await db.execute(
+            select(AttachmentChunk)
+            .join(Attachment, AttachmentChunk.attachment_id == Attachment.id)
+            .join(_Msg, Attachment.message_id == _Msg.id)
+            .where(_Msg.conversation_id == conversation_id)
+            .order_by(
+                _Msg.created_at.desc(),
+                AttachmentChunk.chunk_index.asc(),
+            )
+        )
+        recent_chunks = recent_chunks_q.scalars().all()
+        if recent_chunks:
+            # Group by attachment_id preserving the order from the latest msg
+            seen_att: dict[int, list[str]] = {}
+            for c in recent_chunks:
+                seen_att.setdefault(c.attachment_id, []).append(c.chunk_text)
+            # Use only the most recently uploaded attachment
+            latest_att_id = next(iter(seen_att))
+            attachment_chunk_map[latest_att_id] = seen_att[latest_att_id]
+            log(
+                f"Auto-reusing {len(seen_att[latest_att_id])} chunk(s) "
+                f"from attachment {latest_att_id} (no file attached)"
+            )
+
     # Check if this user has any documents in their knowledge base
     from app.models.document_chunk import DocumentChunk
     from sqlalchemy import func as sql_func
