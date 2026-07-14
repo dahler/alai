@@ -23,6 +23,7 @@ from app.schemas.message import SendMessageRequest, AttachmentInfo
 from app.models.user import User
 from app.models.message import Message
 from app.models.attachment import Attachment
+from app.models.attachment_chunk import AttachmentChunk
 from app.agent.pipeline import AgentPipeline as AgentLoop
 
 router = APIRouter(
@@ -264,6 +265,8 @@ async def send_message_stream(
 
     image_paths = []
     document_contents = []
+    # attachment_id -> list of chunk texts (populated for large docs)
+    attachment_chunk_map: dict[int, list[str]] = {}
     doc_service = DocumentService()
 
     if data.attachment_ids:
@@ -284,20 +287,59 @@ async def send_message_stream(
                 image_paths.append(att.file_path)
                 log("     Added as IMAGE")
             else:
-                log("     Extracting text...")
-                text = await doc_service.extract_text(att.file_path)
-                if text:
-                    text = doc_service.truncate_text(text, max_chars=80000)
-                    document_contents.append(
-                        f"=== Document: {att.original_filename} ===\n{text}"
+                # Check if chunks already exist in DB for this attachment
+                existing = await db.execute(
+                    select(AttachmentChunk)
+                    .where(AttachmentChunk.attachment_id == att.id)
+                    .order_by(AttachmentChunk.chunk_index)
+                )
+                stored_chunks = existing.scalars().all()
+
+                if stored_chunks:
+                    log(
+                        f"     Loaded {len(stored_chunks)} cached chunk(s) "
+                        f"from DB"
                     )
-                    log(f"     Extracted {len(text)} chars")
+                    attachment_chunk_map[att.id] = [
+                        c.chunk_text for c in stored_chunks
+                    ]
                 else:
-                    log("     Failed to extract text")
+                    log("     Extracting text...")
+                    text = await doc_service.extract_text(att.file_path)
+                    if text:
+                        text = doc_service.truncate_text(
+                            text, max_chars=80000
+                        )
+                        full_doc = (
+                            f"=== Document: {att.original_filename}"
+                            f" ===\n{text}"
+                        )
+                        log(f"     Extracted {len(text)} chars")
+
+                        if len(full_doc) > _LARGE_DOC_THRESHOLD:
+                            chunks = _split_doc_chunks(full_doc)
+                            log(
+                                f"     Splitting into {len(chunks)} chunk(s)"
+                                f" — persisting to DB"
+                            )
+                            for idx, chunk_text in enumerate(chunks):
+                                db.add(AttachmentChunk(
+                                    attachment_id=att.id,
+                                    chunk_index=idx,
+                                    total_chunks=len(chunks),
+                                    chunk_text=chunk_text,
+                                ))
+                            await db.flush()
+                            attachment_chunk_map[att.id] = chunks
+                        else:
+                            document_contents.append(full_doc)
+                    else:
+                        log("     Failed to extract text")
 
         log(
             f"Summary: {len(image_paths)} image(s), "
-            f"{len(document_contents)} document(s)"
+            f"{len(document_contents)} small doc(s), "
+            f"{len(attachment_chunk_map)} chunked doc(s)"
         )
 
     # Check if this user has any documents in their knowledge base
@@ -475,13 +517,16 @@ async def send_message_stream(
     log(f"Loaded {len(history)} message(s) for context")
 
     user_message = data.content
+    # All chunks across all chunked attachments, in order
     doc_chunks: list[str] = []
+    for att_id in data.attachment_ids:
+        if att_id in attachment_chunk_map:
+            doc_chunks.extend(attachment_chunk_map[att_id])
 
     # If attachment + RAG combined would overflow the input budget, run a
     # focused extraction pass on each attachment first so only the sections
     # relevant to the user's query are kept.
-    # Only applies when BOTH are present — pure large-document queries are
-    # handled by the chunked analysis path below.
+    # Only applies when BOTH are present — large-doc queries use doc_chunks.
     if document_contents and rag_context:
         total_chars = (
             sum(len(d) for d in document_contents) + len(rag_context)
@@ -504,7 +549,7 @@ async def send_message_stream(
             document_contents = extracted
 
     if rag_context and document_contents:
-        # Both an attached document AND knowledge-base results — combine them
+        # Small attachment + RAG — combine both contexts
         doc_text = "\n\n".join(document_contents)
         source_list = "\n".join(
             f"[{s['number']}] {s['filename']}" for s in rag_sources
@@ -539,26 +584,19 @@ async def send_message_stream(
         log(f"Enhanced message with RAG context ({len(user_message)} chars)")
 
     elif document_contents:
-        total_doc_chars = sum(len(d) for d in document_contents)
-        if total_doc_chars > _LARGE_DOC_THRESHOLD and not image_paths:
-            # Large document: analyze section-by-section in generate().
-            # Don't build a single oversized user_message here.
-            doc_chunks = _split_doc_chunks("\n\n".join(document_contents))
-            log(
-                f"Large document ({total_doc_chars} chars) → "
-                f"{len(doc_chunks)} chunk(s) for analysis"
-            )
-        else:
-            doc_chunks = []
-            doc_text = "\n\n".join(document_contents)
-            user_message = (
-                f"The user has attached the following document(s):\n\n"
-                f"{doc_text}\n\nUser's request: {data.content}"
-            )
-            log(
-                f"Enhanced message with {len(document_contents)} document(s) "
-                f"({len(user_message)} total chars)"
-            )
+        # Small doc — single call
+        doc_text = "\n\n".join(document_contents)
+        user_message = (
+            f"The user has attached the following document(s):\n\n"
+            f"{doc_text}\n\nUser's request: {data.content}"
+        )
+        log(
+            f"Enhanced message with {len(document_contents)} document(s) "
+            f"({len(user_message)} total chars)"
+        )
+
+    if doc_chunks:
+        log(f"Chunked analysis: {len(doc_chunks)} chunk(s) ready")
 
     if router_result.action == RouterAction.AGENTIC:
         log("-" * 60)
