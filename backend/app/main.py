@@ -131,13 +131,40 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    ai_service = AIService()
-    ollama_healthy = await ai_service.check_health()
+    """Dependency-aware readiness probe.
 
-    return {
-        "status": "healthy",
+    Gates on Postgres only: returns 503 when the database is unreachable so k8s
+    readiness pulls the pod out of rotation. Ollama is reported for visibility but
+    is NOT gated — it is a separately-warming service the app tolerates being down
+    at startup, and flapping readiness on it would churn the pod.
+    """
+    import time
+
+    from sqlalchemy import text
+
+    from app.database import async_session_maker
+
+    start = time.perf_counter()
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+        db_status = "healthy"
+    except Exception as exc:  # noqa: BLE001 — any failure means unhealthy
+        db_status = f"unhealthy: {exc}"
+    db_duration = f"{round((time.perf_counter() - start) * 1000, 2)}ms"
+
+    try:
+        ollama_healthy = await AIService().check_health()
+    except Exception:  # noqa: BLE001 — informational only, never gates readiness
+        ollama_healthy = False
+
+    healthy = db_status == "healthy"
+    payload = {
+        "status": "healthy" if healthy else "unhealthy",
+        "db": {"status": db_status, "duration": db_duration},
         "ollama": "connected" if ollama_healthy else "disconnected",
     }
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 
 @app.get("/debug/db")
