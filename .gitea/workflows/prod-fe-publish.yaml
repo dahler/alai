@@ -39,7 +39,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
       - name: Update ArgoCD deployment repo
-        uses: https://github.com/rikhwanto/actions-modules/update-gitops@v1.0.0
+        uses: https://github.com/rikhwanto/actions-modules/update-gitops@v1.2.0
         with:
           gitops_repo: ${{ vars.PROD_GITOPS_REPO }}
           deployment_file: ${{ vars.PROD_FE_DEPLOYMENT_FILE_NAME }}
