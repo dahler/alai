@@ -3,6 +3,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from contextlib import asynccontextmanager
+import logging
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,17 @@ from app.routers import (
 from app.services.ai import AIService
 from app.services.embedding import EmbeddingService
 from app.router.service import RouterService
+
+
+class _SuppressHealthCheck(logging.Filter):
+    """Drop uvicorn access-log lines for the /health readiness probe (fires
+    every ~10s) so they don't drown out real request logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "GET /health " not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressHealthCheck())
 
 
 def _mem_mb() -> int:
