@@ -725,6 +725,17 @@ async def send_message_stream(
             gen_start = time.time()
 
             try:
+                proc_router = (
+                    f"Routing → **Agentic** "
+                    f"({router_result.confidence:.0%})"
+                )
+                yield f"data: [PROCESS]{json.dumps(proc_router)}\n\n"
+                if router_result.reason:
+                    yield (
+                        f"data: [PROCESS]"
+                        f"{json.dumps(router_result.reason)}\n\n"
+                    )
+
                 agent = AgentLoop(
                     ai_service=ai_service,
                     db_session=db,
@@ -812,6 +823,30 @@ async def send_message_stream(
         full_response = ""
         gen_start = time.time()
         try:
+            # --- Process events (shown in UI before the answer) ---
+            router_label = router_result.action.value.replace("_", " ").title()
+            proc_router = (
+                f"Routing → **{router_label}** "
+                f"({router_result.confidence:.0%})"
+            )
+            yield f"data: [PROCESS]{json.dumps(proc_router)}\n\n"
+
+            if router_result.reason:
+                yield (
+                    f"data: [PROCESS]{json.dumps(router_result.reason)}\n\n"
+                )
+
+            if do_rag:
+                if rag_sources:
+                    proc_rag = (
+                        f"Found {len(rag_sources)} document(s) "
+                        f"in knowledge base"
+                    )
+                else:
+                    proc_rag = "No relevant documents found in knowledge base"
+                yield f"data: [PROCESS]{json.dumps(proc_rag)}\n\n"
+            # --- End process events ---
+
             if doc_chunks and not do_rag:
                 # Large document: stream analysis chunk by chunk.
                 # Build condensed history so the LLM knows what was said in

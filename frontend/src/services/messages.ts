@@ -30,7 +30,8 @@ export const messagesService = {
     onChunk: (chunk: string) => void,
     onDone: () => void,
     onError: (error: string) => void,
-    onSources?: (sources: Source[]) => void
+    onSources?: (sources: Source[]) => void,
+    onProcess?: (text: string) => void
   ): Promise<void> {
     const token = localStorage.getItem('token')
     const headers: HeadersInit = {
@@ -95,6 +96,14 @@ export const messagesService = {
               onSources?.(sources)
             } catch {
               // ignore malformed sources
+            }
+            continue
+          }
+          if (data.startsWith('[PROCESS]')) {
+            try {
+              onProcess?.(JSON.parse(data.slice(9)))
+            } catch {
+              onProcess?.(data.slice(9))
             }
             continue
           }

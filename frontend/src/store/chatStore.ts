@@ -10,7 +10,9 @@ interface ChatState {
   isStreaming: boolean
   streamingContent: string
   streamingSources: Source[]
+  streamingProcess: string[]
   messageSources: Record<number, Source[]>  // message id → sources
+  messageProcessLog: Record<number, string[]>  // message id → process lines
   error: string | null
   pendingAttachments: UploadResponse[]
   isUploading: boolean
@@ -29,7 +31,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   streamingContent: '',
   streamingSources: [],
+  streamingProcess: [],
   messageSources: {},
+  messageProcessLog: {},
   error: null,
   pendingAttachments: [],
   isUploading: false,
@@ -88,12 +92,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamingContent: '',
       streamingSources: [],
+      streamingProcess: [],
       error: null,
       pendingAttachments: [],
     }))
 
     let fullContent = ''
     let latestSources: Source[] = []
+    let processLines: string[] = []
 
     await messagesService.sendStream(
       conversationId,
@@ -107,7 +113,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // On done
       async () => {
         const sseSources = latestSources
-        set({ isStreaming: false, streamingContent: '', streamingSources: [] })
+        const capturedProcess = processLines
+        set({ isStreaming: false, streamingContent: '', streamingSources: [], streamingProcess: [] })
 
         try {
           const conversation = await conversationsService.get(conversationId)
@@ -126,9 +133,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           }
 
+          // Store process log for the last assistant message
+          const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+
           // Fallback: use in-memory SSE sources for the last assistant message
           if (sseSources.length > 0) {
-            const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
             if (lastAssistant && !messageSources[lastAssistant.id]) {
               messageSources[lastAssistant.id] = sseSources
             }
@@ -138,7 +147,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           }
 
-          set({ messages, messageSources })
+          set((state) => ({
+            messages,
+            messageSources,
+            messageProcessLog: lastAssistant && capturedProcess.length > 0
+              ? { ...state.messageProcessLog, [lastAssistant.id]: capturedProcess }
+              : state.messageProcessLog,
+          }))
         } catch {
           const assistantMessage: Message = {
             id: Date.now(),
@@ -159,6 +174,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isStreaming: false,
           streamingContent: '',
           streamingSources: [],
+          streamingProcess: [],
           error: error,
         })
       },
@@ -166,12 +182,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       (sources: Source[]) => {
         latestSources = sources
         set({ streamingSources: sources })
+      },
+      // On process
+      (text: string) => {
+        processLines = [...processLines, text]
+        set({ streamingProcess: processLines })
       }
     )
   },
 
   clearMessages: () => {
-    set({ messages: [], error: null, pendingAttachments: [] })
+    set({ messages: [], error: null, pendingAttachments: [], messageProcessLog: {} })
   },
 
   addMessage: (message: Message) => {

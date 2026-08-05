@@ -11,6 +11,55 @@ interface ChatMessageProps {
   message: Message
   isStreaming?: boolean
   sources?: Source[]
+  processLog?: string[]
+}
+
+function ProcessBox({ lines, isStreaming }: { lines: string[]; isStreaming: boolean }) {
+  const [expanded, setExpanded] = useState(true)
+
+  useEffect(() => {
+    // Auto-collapse once the answer is complete
+    if (!isStreaming) setExpanded(false)
+  }, [isStreaming])
+
+  if (!lines.length) return null
+
+  return (
+    <div className="mb-3">
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className="flex items-center gap-1.5 text-xs text-dark-muted hover:text-dark-text transition-colors"
+      >
+        <svg
+          className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <span>Process</span>
+        {isStreaming && (
+          <span className="flex gap-0.5 ml-1">
+            <span className="w-1 h-1 rounded-full bg-dark-muted animate-bounce" style={{ animationDelay: '0ms' }} />
+            <span className="w-1 h-1 rounded-full bg-dark-muted animate-bounce" style={{ animationDelay: '150ms' }} />
+            <span className="w-1 h-1 rounded-full bg-dark-muted animate-bounce" style={{ animationDelay: '300ms' }} />
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <div className="mt-2 ml-4 pl-3 border-l-2 border-dark-chat space-y-1">
+          {lines.map((line, i) => (
+            <ReactMarkdown
+              key={i}
+              remarkPlugins={[remarkGfm]}
+              components={{ p: ({ children }) => <p className="text-xs text-dark-muted leading-relaxed">{children}</p> }}
+            >
+              {line}
+            </ReactMarkdown>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // Attachment display component
@@ -465,7 +514,7 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
   )
 }
 
-export function ChatMessage({ message, isStreaming = false, sources = [] }: ChatMessageProps) {
+export function ChatMessage({ message, isStreaming = false, sources = [], processLog }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const attachments = message.attachments || []
   const [viewing, setViewing] = useState<Source | null>(null)
@@ -509,6 +558,11 @@ export function ChatMessage({ message, isStreaming = false, sources = [] }: Chat
               <AttachmentDisplay key={attachment.id} attachment={attachment} />
             ))}
           </div>
+        )}
+
+        {/* Process box — visible for assistant messages only */}
+        {!isUser && processLog && processLog.length > 0 && (
+          <ProcessBox lines={processLog} isStreaming={isStreaming} />
         )}
 
         {/* Message content */}

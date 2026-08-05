@@ -17,7 +17,9 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
     isStreaming,
     streamingContent,
     streamingSources,
+    streamingProcess,
     messageSources,
+    messageProcessLog,
     pendingAttachments,
     isUploading,
     fetchMessages,
@@ -83,11 +85,12 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
                 key={message.id}
                 message={message}
                 sources={messageSources[message.id]}
+                processLog={messageProcessLog[message.id]}
               />
             ))}
 
-            {/* Streaming message */}
-            {isStreaming && streamingContent && (
+            {/* Streaming message — show as soon as process lines or content arrive */}
+            {isStreaming && (streamingContent || streamingProcess.length > 0) && (
               <ChatMessage
                 message={{
                   id: -1,
@@ -99,11 +102,12 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
                 }}
                 isStreaming
                 sources={streamingSources}
+                processLog={streamingProcess}
               />
             )}
 
-            {/* Typing indicator when streaming but no content yet */}
-            {isStreaming && !streamingContent && (
+            {/* Typing indicator only when nothing has arrived yet */}
+            {isStreaming && !streamingContent && streamingProcess.length === 0 && (
               <div className="flex gap-4 px-6 py-5 bg-dark-sidebar">
                 <div className="w-8 h-8 rounded-full bg-dark-hover flex items-center justify-center text-sm font-medium text-white">
                   AI

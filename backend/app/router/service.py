@@ -30,61 +30,47 @@ _SYSTEM = (
 )
 
 _PROMPT = """\
-Classify the user request into exactly one action.
+You are a request router. Pick exactly one action for the user request.
 
-Actions:
-  direct_answer   - factual question, definition, explanation, coding help;
-                    general knowledge only, no live or external data needed
-  rag_search      - question about internal company matters: SOPs, policies,
-                    procedures, roles, responsibilities, workflows, products,
-                    or any topic likely covered in the user's uploaded docs
-  agentic         - ONLY when the request explicitly requires one of:
-                    * live/current external data (prices, exchange rates,
-                      weather, stock quotes, news, economic indicators)
-                    * creating/generating a file to download (Excel, Word,
-                      PDF, PowerPoint, laporan, dokumen, presentasi)
-                    * email tasks (read inbox, send email, reply to email)
-                    * any output the user wants to save or download
-  vision_analysis - user attached an image and wants it analysed
+━━━ ACTIONS ━━━
+direct_answer   Answer using general world knowledge only. No company docs needed.
+rag_search      Search the user's internal company knowledge base (SOPs, policies,
+                procedures, roles, org structure, approval thresholds, workflows).
+agentic         Use tools: live data (prices/rates/weather/news), file generation
+                (Excel/Word/PDF/PowerPoint), or email operations.
 
-Key rules (follow exactly):
-0. Greetings, small talk, thanks, acknowledgements, or any purely
-   conversational message (hi, hello, thanks, okay, got it, halo, oke,
-   terima kasih, selamat pagi, etc.) -> ALWAYS direct_answer, regardless
-   of knowledge base or attachments.
-1. "generate/create/make/buat + report/Excel/Word/PDF/PowerPoint"
-   -> ALWAYS agentic
-2. "latest/current/today/terbaru/sekarang + rate/price/news/kurs"
-   -> ALWAYS agentic
-3. If "Has file attachments: true", use this decision tree:
-   a. Does the query ask to COMPARE or CHECK the attachment AGAINST
-      internal rules / SOP / policy?
-      YES -> rag_search (needs knowledge base)
-   b. Does the query ask to analyze, find issues, summarize, review,
-      extract, or work with the attachment itself?
-      YES -> direct_answer (model will read the attachment directly)
-   c. When in doubt with an attachment present -> direct_answer.
-   Use rag_search ONLY when comparison against KB is explicit.
-4. If "User has a knowledge base: true" and no attachment:
-   - WHO is responsible / siapa yang bertanggung jawab -> rag_search
-   - HOW does process X work / bagaimana proses X -> rag_search
-   - WHAT is the SOP / procedure / policy -> rag_search
-   - Any question about an internal company, its website, its products,
-     its teams, or its operations -> rag_search
-   - Mentioning a company name or website URL is NOT a reason for agentic
-5. General knowledge questions (math, science, history, coding, grammar,
-   definitions, explanations) are ALWAYS direct_answer, even when the
-   user has a knowledge base. Only route to rag_search if the question
-   is specifically about the user's own documents, company, or industry.
-5. If "User has a knowledge base: false" and unsure -> prefer agentic
-
+━━━ INPUT ━━━
 Request: {query}
 Has file attachments : {has_attachments}
 Has image attachments: {has_images}
 User has a knowledge base: {has_knowledge_base}
 
-Return JSON:
-{{"action": "<action>", "confidence": <0.0-1.0>, "reason": "<one sentence>"}}
+━━━ DECISION STEPS — follow in order ━━━
+Step 1. Is this a greeting or small talk? (hi, thanks, oke, selamat pagi…)
+        YES → action = direct_answer
+
+Step 2. Does the request ask to generate a file or fetch live external data?
+        (Excel/Word/PDF/PPT, harga/kurs/berita terbaru, email tasks)
+        YES → action = agentic
+
+Step 3. Is "User has a knowledge base: true" and the question about a
+        company-specific rule, person, threshold, SOP, or process that
+        cannot be answered correctly from general world knowledge alone?
+        (e.g. who approves, what is the limit, what is the SOP, who is PIC,
+         bagaimana prosedur, siapa yang berwenang, berapa batas pengadaan)
+        YES → action = rag_search
+
+Step 4. Is "Has file attachments: true" and the query asks to analyse,
+        summarise, review, or extract from the attachment itself?
+        YES → action = direct_answer
+
+Step 5. All other questions answerable from general world knowledge
+        → action = direct_answer
+
+Write your reasoning FIRST, then the action. The action must be consistent
+with your reasoning. Format:
+
+{{"reasoning": "<one sentence explaining which step matched and why>", "action": "<action>", "confidence": <0.0-1.0>}}
 
 JSON:"""
 
@@ -253,6 +239,10 @@ class RouterService:
         )
 
     def _from_dict(self, d: dict) -> RouterResult:
+        # reasoning comes before action in the JSON so the model
+        # commits to its logic before picking the label
+        reason = str(d.get("reasoning", d.get("reason", "")))
+
         action_str = str(d.get("action", "")).lower().strip()
         try:
             action = RouterAction(action_str)
@@ -264,17 +254,13 @@ class RouterService:
                 ),
                 RouterAction.AGENTIC,
             )
-
         if action == RouterAction.EXTERNAL_API:
             action = RouterAction.AGENTIC
 
         confidence = float(d.get("confidence", 0.8))
         confidence = max(0.0, min(1.0, confidence))
-        reason = str(d.get("reason", ""))
         return RouterResult(
-            action=action,
-            confidence=confidence,
-            reason=reason,
+            action=action, confidence=confidence, reason=reason
         )
 
     async def detect_and_translate(self, query: str) -> tuple[str, str]:
