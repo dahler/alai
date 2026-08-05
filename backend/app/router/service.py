@@ -49,9 +49,19 @@ User has a knowledge base: {has_knowledge_base}
 Step 1. Is this a greeting or small talk? (hi, thanks, oke, selamat pagi…)
         YES → action = direct_answer
 
-Step 2. Does the request ask to generate a file or fetch live external data?
-        (Excel/Word/PDF/PPT, harga/kurs/berita terbaru, email tasks)
+Step 2. Does the request EXPLICITLY ask to generate/create/download a file,
+        OR ask for live data that requires an external source RIGHT NOW?
+        File generation: user says buat/create/generate/buatkan/download +
+          (laporan/Excel/Word/PDF/PowerPoint/rekap/tabel/dokumen)
+        Live external data: user asks for TODAY'S/CURRENT/TERBARU price,
+          exchange rate, stock quote, weather, or news — data that changes
+          daily and cannot be known without fetching it right now.
+        Email: read inbox / send email / reply to email
         YES → action = agentic
+        ⚠ NOT agentic: math problems that GIVE you the prices/numbers
+          (e.g. "pensil seharga Rp2.000" — the price is given, not fetched).
+          NOT agentic: calculations, unit conversions, word problems with
+          numbers already stated in the question → these are direct_answer.
 
 Step 3. Is "User has a knowledge base: true" and the question about a
         company-specific rule, person, threshold, SOP, or process that
