@@ -3,6 +3,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from contextlib import asynccontextmanager
+import logging
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,17 @@ from app.routers import (
 from app.services.ai import AIService
 from app.services.embedding import EmbeddingService
 from app.router.service import RouterService
+
+
+class _SuppressHealthCheck(logging.Filter):
+    """Drop uvicorn access-log lines for the /health readiness probe (fires
+    every ~10s) so they don't drown out real request logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "GET /health " not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressHealthCheck())
 
 
 def _mem_mb() -> int:
@@ -131,13 +143,40 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    ai_service = AIService()
-    ollama_healthy = await ai_service.check_health()
+    """Dependency-aware readiness probe.
 
-    return {
-        "status": "healthy",
+    Gates on Postgres only: returns 503 when the database is unreachable so k8s
+    readiness pulls the pod out of rotation. Ollama is reported for visibility but
+    is NOT gated — it is a separately-warming service the app tolerates being down
+    at startup, and flapping readiness on it would churn the pod.
+    """
+    import time
+
+    from sqlalchemy import text
+
+    from app.database import async_session_maker
+
+    start = time.perf_counter()
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+        db_status = "healthy"
+    except Exception as exc:  # noqa: BLE001 — any failure means unhealthy
+        db_status = f"unhealthy: {exc}"
+    db_duration = f"{round((time.perf_counter() - start) * 1000, 2)}ms"
+
+    try:
+        ollama_healthy = await AIService().check_health()
+    except Exception:  # noqa: BLE001 — informational only, never gates readiness
+        ollama_healthy = False
+
+    healthy = db_status == "healthy"
+    payload = {
+        "status": "healthy" if healthy else "unhealthy",
+        "db": {"status": db_status, "duration": db_duration},
         "ollama": "connected" if ollama_healthy else "disconnected",
     }
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 
 @app.get("/debug/db")
