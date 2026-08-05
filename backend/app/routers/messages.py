@@ -812,7 +812,7 @@ async def send_message_stream(
         full_response = ""
         gen_start = time.time()
         try:
-            if doc_chunks:
+            if doc_chunks and not do_rag:
                 # Large document: stream analysis chunk by chunk.
                 # Build condensed history so the LLM knows what was said in
                 # previous turns (e.g. "find issues" → "fix them all").
