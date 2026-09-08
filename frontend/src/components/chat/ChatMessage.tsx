@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -6,6 +6,8 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { Message, Attachment, Source } from '../../types/chat'
 import type { Components } from 'react-markdown'
+import { documentsService } from '../../services/documents'
+import type { DocumentChunk } from '../../services/documents'
 
 interface ChatMessageProps {
   message: Message
@@ -426,8 +428,10 @@ function getFileType(filename: string): 'pdf' | 'image' | 'other' {
 }
 
 function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () => void }) {
+  const [chunks, setChunks] = useState<DocumentChunk[]>([])
+  const [loading, setLoading] = useState(true)
+  const highlightRef = useRef<HTMLDivElement>(null)
   const fileUrl = source.stored_filename ? `/api/uploads/${source.stored_filename}` : null
-  const fileType = getFileType(source.filename)
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -435,9 +439,33 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
     return () => document.removeEventListener('keydown', handleKey)
   }, [onClose])
 
+  useEffect(() => {
+    if (!source.document_id) { setLoading(false); return }
+    setLoading(true)
+    documentsService.getChunks(source.document_id)
+      .then(data => setChunks(data.chunks || []))
+      .catch(() => setChunks([]))
+      .finally(() => setLoading(false))
+  }, [source.document_id])
+
+  // Scroll to highlighted chunk once chunks are rendered
+  useEffect(() => {
+    if (!loading && highlightRef.current) {
+      setTimeout(() => {
+        highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 150)
+    }
+  }, [loading])
+
+  const isMatch = (chunk: DocumentChunk): boolean => {
+    if (source.chunk_index !== undefined) return chunk.chunk_index === source.chunk_index
+    if (source.chunk_text) return chunk.chunk_text.includes(source.chunk_text.slice(0, 80))
+    return false
+  }
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-70"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
       onClick={onClose}
     >
       <div
@@ -459,7 +487,7 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
                 href={fileUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Open in new tab"
+                title="Open original document"
                 className="p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -479,34 +507,64 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
           </div>
         </div>
 
-        {/* Relevant passage */}
-        {source.chunk_text && (
-          <div className="px-4 py-3 bg-dark-bg border-b border-dark-chat flex-shrink-0 max-h-36 overflow-y-auto">
-            <p className="text-[10px] text-dark-muted font-semibold uppercase tracking-wide mb-1">Cited passage</p>
-            <p className="text-xs text-dark-text leading-5 italic border-l-2 border-blue-500 pl-2">
-              {source.chunk_text.length > 500
-                ? source.chunk_text.slice(0, 500) + '…'
-                : source.chunk_text}
-            </p>
-          </div>
-        )}
-
-        {/* Body */}
-        <div className="flex-1 overflow-hidden rounded-b-xl">
-          {!fileUrl ? (
-            <div className="flex items-center justify-center h-full text-dark-muted text-sm">
-              File not available
+        {/* Chunk list body */}
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="flex items-center gap-2 text-dark-muted text-sm">
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Loading document…
+              </div>
             </div>
-          ) : fileType === 'image' ? (
-            <div className="flex items-center justify-center h-full overflow-auto p-4 bg-dark-bg">
-              <img src={fileUrl} alt={source.filename} className="max-w-full max-h-full object-contain rounded" />
+          ) : chunks.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-dark-muted text-sm">
+              Document content not available
             </div>
           ) : (
-            <iframe
-              src={fileUrl}
-              className="w-full h-full rounded-b-xl"
-              title={source.filename}
-            />
+            <div className="p-4 space-y-2">
+              {chunks.map((chunk) => {
+                const highlighted = isMatch(chunk)
+                return (
+                  <div
+                    key={chunk.id}
+                    ref={highlighted ? highlightRef : undefined}
+                    className={`rounded-lg p-4 border transition-colors ${
+                      highlighted
+                        ? 'border-amber-400/40 bg-amber-400/10'
+                        : 'border-transparent bg-dark-chat/20 hover:border-dark-chat/60'
+                    }`}
+                  >
+                    {chunk.heading_context && (
+                      <p className="text-[10px] text-dark-muted font-semibold uppercase tracking-wider mb-2">
+                        {chunk.heading_context}
+                      </p>
+                    )}
+                    {highlighted && (
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                        <span className="text-[10px] text-amber-400/90 font-semibold uppercase tracking-wider">
+                          Cited passage
+                        </span>
+                      </div>
+                    )}
+                    <div className={`text-sm leading-relaxed prose prose-sm max-w-none ${
+                      highlighted ? 'text-dark-text' : 'text-dark-muted'
+                    }`}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{chunk.chunk_text}</ReactMarkdown>
+                    </div>
+                    {chunk.page_start > 0 && (
+                      <p className="text-[10px] text-dark-muted mt-3 opacity-50">
+                        Halaman {chunk.page_start}
+                        {chunk.page_end !== chunk.page_start ? `–${chunk.page_end}` : ''}
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
       </div>

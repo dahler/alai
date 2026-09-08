@@ -519,6 +519,7 @@ async def send_message_stream(
                             "stored_filename": r.stored_filename,
                             "document_id": r.document_id,
                             "chunk_text": r.chunk_text,
+                            "chunk_index": getattr(r, "chunk_index", None),
                         })
                 doc_to_num = {
                     s["document_id"]: s["number"] for s in rag_sources
@@ -584,6 +585,8 @@ async def send_message_stream(
                             "filename": r["filename"],
                             "stored_filename": r.get("stored_filename", ""),
                             "document_id": doc_id,
+                            "chunk_text": r.get("chunk_text", ""),
+                            "chunk_index": r.get("chunk_index"),
                         })
                 doc_to_num_v = {
                     s["document_id"]: s["number"] for s in rag_sources

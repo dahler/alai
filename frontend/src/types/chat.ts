@@ -6,6 +6,7 @@ export interface Source {
   stored_filename: string
   document_id: number
   chunk_text?: string
+  chunk_index?: number
 }
 
 export interface Attachment {
