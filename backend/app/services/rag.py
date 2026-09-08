@@ -444,6 +444,7 @@ class RAGService:
                     "distance"
                 ),
                 trgm_expr,
+                Attachment.filename.label("stored_filename"),
             )
             .join(Attachment, Attachment.id == DocumentChunk.attachment_id)
             .where(access)
@@ -535,7 +536,7 @@ class RAGService:
         # Step 5: Build results
         # ------------------------------------------------------------------
         results = []
-        for i, (chunk, filename, distance, trgm) in enumerate(rows):
+        for i, (chunk, filename, distance, trgm, stored_filename) in enumerate(rows):
             hybrid = round(0.7 * (1 - distance) + 0.3 * (trgm or 0.0), 4)
             results.append({
                 "chunk_id": chunk.id,
@@ -547,6 +548,7 @@ class RAGService:
                 "similarity": hybrid,
                 "attachment_id": chunk.attachment_id,
                 "filename": filename or "Unknown",
+                "stored_filename": stored_filename or "",
                 "is_company_doc": chunk.is_company_doc,
                 "section_id": chunk.section_id,
             })
@@ -676,6 +678,7 @@ class RAGService:
                 DocumentChunk.embedding.cosine_distance(query_emb).label(
                     "distance"
                 ),
+                Attachment.filename.label("stored_filename"),
             )
             .join(Attachment, Attachment.id == DocumentChunk.attachment_id)
             .where(
@@ -686,7 +689,7 @@ class RAGService:
             .limit(top_k)
         )).all()
 
-        for chunk, filename, distance in extra_rows:
+        for chunk, filename, distance, stored_filename in extra_rows:
             results.append({
                 "chunk_id": chunk.id,
                 "chunk_text": chunk.chunk_text or "",
@@ -697,6 +700,7 @@ class RAGService:
                 "similarity": round(1 - distance, 4),
                 "attachment_id": chunk.attachment_id,
                 "filename": filename or "Unknown",
+                "stored_filename": stored_filename or "",
                 "is_company_doc": chunk.is_company_doc,
                 "section_id": chunk.section_id,
                 "via_connection": True,
@@ -1292,15 +1296,15 @@ def _hybrid_rerank(rows: list, top_k: int) -> list:
     """
     Rerank using 70 % vector cosine + 30 % DB-computed trigram similarity.
 
-    Rows are 4-tuples: (DocumentChunk, filename, cosine_distance, trgm_score).
+    Rows are 5-tuples: (DocumentChunk, filename, cosine_distance, trgm_score, stored_filename).
     Higher score = better match.
     """
     scored = [
-        (0.7 * (1.0 - dist) + 0.3 * (trgm or 0.0), chunk, fname, dist, trgm)
-        for chunk, fname, dist, trgm in rows
+        (0.7 * (1.0 - dist) + 0.3 * (trgm or 0.0), chunk, fname, dist, trgm, sf)
+        for chunk, fname, dist, trgm, sf in rows
     ]
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [(c, f, d, t) for _, c, f, d, t in scored[:top_k]]
+    return [(c, f, d, t, sf) for _, c, f, d, t, sf in scored[:top_k]]
 
 
 def _attachment_to_dict(att: Attachment) -> dict:
