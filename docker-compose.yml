@@ -33,13 +33,26 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5}
       CORS_ORIGINS: '["http://localhost:3000", "http://localhost:80", "https://alai.antaragpt.com"]'
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       db:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Nginx reverse proxy for the backend
+  # Handles client_max_body_size and ensures CORS headers appear on all
+  # responses (including nginx-level 413 errors from large uploads).
+  api-proxy:
+    image: nginx:1.27-alpine
+    container_name: alai-api-proxy
+    volumes:
+      - ./nginx/api.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8000:80"
+    depends_on:
+      - backend
 
   # React Frontend
   frontend:
