@@ -1,13 +1,21 @@
-import { useMemo, useState, useEffect, useRef } from 'react'
+import { useMemo, useState, useEffect, useRef, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { Document as PdfDocument, Page as PdfPage, pdfjs } from 'react-pdf'
+import 'react-pdf/dist/Page/TextLayer.css'
+import 'react-pdf/dist/Page/AnnotationLayer.css'
 import type { Message, Attachment, Source } from '../../types/chat'
 import type { Components } from 'react-markdown'
 import { documentsService } from '../../services/documents'
 import type { DocumentChunk } from '../../services/documents'
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString()
 
 interface ChatMessageProps {
   message: Message
@@ -430,7 +438,10 @@ function getFileType(filename: string): 'pdf' | 'image' | 'other' {
 function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () => void }) {
   const [chunks, setChunks] = useState<DocumentChunk[]>([])
   const [loading, setLoading] = useState(true)
+  const [numPages, setNumPages] = useState(0)
+  const [pdfWidth, setPdfWidth] = useState(600)
   const highlightRef = useRef<HTMLDivElement>(null)
+  const pdfContainerRef = useRef<HTMLDivElement>(null)
   const fileUrl = source.stored_filename ? `/api/uploads/${source.stored_filename}` : null
   const fileType = getFileType(source.filename)
   const isPdf = fileType === 'pdf'
@@ -458,6 +469,17 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
     }
   }, [loading])
 
+  // Track PDF panel width for responsive page rendering
+  useEffect(() => {
+    if (!pdfContainerRef.current) return
+    const obs = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width
+      if (w) setPdfWidth(Math.floor(w) - 16)
+    })
+    obs.observe(pdfContainerRef.current)
+    return () => obs.disconnect()
+  }, [])
+
   const isMatch = (chunk: DocumentChunk): boolean => {
     if (source.chunk_index !== undefined) return chunk.chunk_index === source.chunk_index
     if (source.chunk_text) return chunk.chunk_text.includes(source.chunk_text.slice(0, 80))
@@ -465,10 +487,27 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
   }
 
   const citedChunk = chunks.find(isMatch)
-  // #page=N makes browser PDF viewer jump directly to the cited page
-  const pdfSrc = fileUrl && isPdf
-    ? `${fileUrl}${citedChunk?.page_start ? `#page=${citedChunk.page_start}` : ''}`
-    : null
+  const startPage = citedChunk?.page_start || 1
+  const endPage = citedChunk?.page_end || startPage
+
+  // Pages to render: cited page range only (keeps load fast)
+  const pagesToShow = numPages > 0
+    ? Array.from({ length: Math.min(endPage, numPages) - startPage + 1 }, (_, i) => startPage + i)
+    : [startPage]
+
+  // Highlight text items that appear verbatim inside the cited chunk_text.
+  // Since we only render the cited page(s), false positives on other pages are not an issue.
+  const customTextRenderer = useCallback(
+    ({ str }: { str: string }) => {
+      const trimmed = str.trim()
+      if (!source.chunk_text || trimmed.length < 4) return str
+      if (source.chunk_text.includes(trimmed)) {
+        return `<mark style="background:rgba(251,191,36,0.45);color:inherit;border-radius:2px;padding:0 1px;">${str}</mark>`
+      }
+      return str
+    },
+    [source.chunk_text],
+  )
 
   return (
     <div
@@ -495,13 +534,8 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
           </div>
           <div className="flex items-center gap-1 flex-shrink-0 ml-3">
             {fileUrl && (
-              <a
-                href={fileUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open in new tab"
-                className="p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors"
-              >
+              <a href={fileUrl} target="_blank" rel="noopener noreferrer" title="Open in new tab"
+                className="p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                 </svg>
@@ -516,33 +550,28 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
           </div>
         </div>
 
-        {/* Body — split when PDF, single column otherwise */}
+        {/* Body */}
         <div className="flex-1 flex min-h-0 overflow-hidden rounded-b-xl">
 
-          {/* Left: chunk list with yellow highlight */}
-          <div className={`${isPdf ? 'w-80 flex-shrink-0 border-r border-dark-chat' : 'flex-1'} overflow-y-auto`}>
+          {/* Left: chunk list navigation */}
+          <div className={`${isPdf ? 'w-72 flex-shrink-0 border-r border-dark-chat' : 'flex-1'} overflow-y-auto`}>
             {loading ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="flex items-center gap-2 text-dark-muted text-sm">
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Loading…
-                </div>
+              <div className="flex items-center justify-center h-32">
+                <svg className="w-4 h-4 animate-spin text-dark-muted" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
               </div>
             ) : chunks.length === 0 ? (
-              <div className="flex items-center justify-center h-full text-dark-muted text-sm">
+              <div className="flex items-center justify-center h-32 text-dark-muted text-sm">
                 Content not available
               </div>
             ) : (
-              <div className="p-3 space-y-1.5">
+              <div className="p-3 space-y-1">
                 {chunks.map((chunk) => {
                   const highlighted = isMatch(chunk)
                   return (
-                    <div
-                      key={chunk.id}
-                      ref={highlighted ? highlightRef : undefined}
+                    <div key={chunk.id} ref={highlighted ? highlightRef : undefined}
                       className={`rounded-lg px-3 py-2.5 border transition-colors cursor-default ${
                         highlighted
                           ? 'border-amber-400/50 bg-amber-400/10'
@@ -557,18 +586,14 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
                       {highlighted && (
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-                          <span className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider">
-                            Cited passage
-                          </span>
+                          <span className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider">Cited</span>
                         </div>
                       )}
-                      <p className={`text-xs leading-relaxed line-clamp-${highlighted ? '6' : '3'} ${
-                        highlighted ? 'text-dark-text' : 'text-dark-muted'
-                      }`}>
+                      <p className={`text-xs leading-relaxed ${highlighted ? 'line-clamp-5 text-dark-text' : 'line-clamp-2 text-dark-muted'}`}>
                         {chunk.chunk_text}
                       </p>
                       {chunk.page_start > 0 && (
-                        <p className="text-[10px] text-dark-muted mt-1.5 opacity-50">
+                        <p className="text-[10px] text-dark-muted mt-1 opacity-50">
                           p.{chunk.page_start}{chunk.page_end !== chunk.page_start ? `–${chunk.page_end}` : ''}
                         </p>
                       )}
@@ -579,25 +604,41 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
             )}
           </div>
 
-          {/* Right: PDF viewer (PDF files only) */}
+          {/* Right: PDF with text-layer yellow highlight */}
           {isPdf && (
-            <div className="flex-1 bg-dark-bg">
-              {pdfSrc ? (
-                <iframe
-                  key={pdfSrc}
-                  src={pdfSrc}
-                  className="w-full h-full rounded-br-xl"
-                  title={source.filename}
-                />
+            <div ref={pdfContainerRef} className="flex-1 overflow-y-auto bg-[#525659]">
+              {fileUrl ? (
+                <PdfDocument
+                  file={fileUrl}
+                  onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+                  loading={
+                    <div className="flex items-center justify-center h-48 text-gray-400 text-sm">
+                      Loading PDF…
+                    </div>
+                  }
+                >
+                  {pagesToShow.map((pageNum) => (
+                    <div key={pageNum} className="flex flex-col items-center py-3">
+                      <PdfPage
+                        pageNumber={pageNum}
+                        width={pdfWidth || 600}
+                        renderTextLayer
+                        renderAnnotationLayer={false}
+                        customTextRenderer={customTextRenderer}
+                      />
+                      <p className="text-[10px] text-gray-400 mt-1">Page {pageNum}</p>
+                    </div>
+                  ))}
+                </PdfDocument>
               ) : (
-                <div className="flex items-center justify-center h-full text-dark-muted text-sm">
+                <div className="flex items-center justify-center h-full text-gray-400 text-sm">
                   PDF not available
                 </div>
               )}
             </div>
           )}
 
-          {/* Image viewer (non-PDF, non-chunk) */}
+          {/* Image viewer */}
           {!isPdf && fileType === 'image' && fileUrl && (
             <div className="flex items-center justify-center p-4 bg-dark-bg">
               <img src={fileUrl} alt={source.filename} className="max-w-full max-h-full object-contain rounded" />
