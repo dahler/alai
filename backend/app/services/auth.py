@@ -137,6 +137,14 @@ class AuthService:
         if not email:
             raise ValueError("Could not get email from Microsoft account")
 
+        # Domain restriction — only @antaraetp.com accounts allowed
+        if not email.lower().endswith("@antaraetp.com"):
+            domain = email.split("@")[-1] if "@" in email else "unknown"
+            raise ValueError(
+                f"Access is restricted to @antaraetp.com accounts. "
+                f"'{domain}' is not authorized."
+            )
+
         # Create or get user
         user, created = await self.user_repo.get_or_create_by_email(
             email=email,

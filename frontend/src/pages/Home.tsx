@@ -1,154 +1,108 @@
 import { useNavigate } from 'react-router-dom'
 import { useConversationStore } from '../store/conversationStore'
+import { useAuthStore } from '../store/authStore'
+
+const CAPABILITIES = [
+  {
+    icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10',
+    title: 'Search Company Knowledge',
+    desc: 'Find answers from SOPs, policies, procedures, and internal documents instantly.',
+  },
+  {
+    icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+    title: 'Analyze Documents',
+    desc: 'Upload files and ask questions — ALAI reads and summarizes them for you.',
+  },
+  {
+    icon: 'M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
+    title: 'Generate Reports',
+    desc: 'Create Excel, Word, PDF, or PowerPoint reports from your data and templates.',
+  },
+  {
+    icon: 'M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z',
+    title: 'Email & Live Data',
+    desc: 'Read and send emails, get live exchange rates, stock prices, and news.',
+  },
+]
+
+const EXAMPLE_PROMPTS = [
+  'Siapa yang memberikan approval untuk pembelian di atas 50 juta?',
+  'Buatkan rekap data penjualan dalam format Excel',
+  'Rangkum dokumen yang saya upload ini',
+  'Berapa kurs USD/IDR hari ini?',
+]
 
 export default function Home() {
   const navigate = useNavigate()
-  const createConversation = useConversationStore(
-    (state) => state.createConversation
-  )
+  const createConversation = useConversationStore((state) => state.createConversation)
+  const user = useAuthStore((state) => state.user)
 
   const handleNewChat = async () => {
     const conversation = await createConversation()
     navigate(`/chat/${conversation.id}`)
   }
 
+  const firstName = user?.name?.split(' ')[0] || 'there'
+
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center p-8">
-      <div className="max-w-2xl">
-        <div className="w-20 h-20 rounded-full bg-gradient-to-br from-dark-hover to-purple-600 flex items-center justify-center mx-auto mb-6">
-          <svg
-            className="w-10 h-10 text-white"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
+    <div className="flex flex-col items-center justify-center h-full text-center p-6 overflow-y-auto">
+      <div className="max-w-2xl w-full py-8">
+
+        {/* Greeting */}
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-dark-hover to-purple-600 flex items-center justify-center mx-auto mb-5 shadow-lg shadow-dark-hover/20">
+          <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
               d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
             />
           </svg>
         </div>
 
-        <h1 className="text-4xl font-bold text-dark-text mb-4">
-          Welcome to <span className="text-dark-hover">ALAI</span>
+        <h1 className="text-3xl font-bold text-dark-text mb-1">
+          Halo, <span className="text-dark-hover">{firstName}</span>!
         </h1>
+        <p className="text-dark-muted mb-8">Apa yang bisa ALAI bantu hari ini?</p>
 
-        <p className="text-lg text-dark-muted mb-8">
-          Your AI-powered assistant ready to help with coding, questions,
-          explanations, and more. Start a conversation to explore what I can do!
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-          <div className="bg-dark-sidebar p-4 rounded-lg text-left">
-            <div className="flex items-center gap-3 mb-2">
-              <svg
-                className="w-5 h-5 text-dark-hover"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
-                />
-              </svg>
-              <h3 className="font-semibold">Code Assistance</h3>
-            </div>
-            <p className="text-sm text-dark-muted">
-              Get help with coding, debugging, and explaining code in any language.
-            </p>
-          </div>
-
-          <div className="bg-dark-sidebar p-4 rounded-lg text-left">
-            <div className="flex items-center gap-3 mb-2">
-              <svg
-                className="w-5 h-5 text-dark-hover"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-                />
-              </svg>
-              <h3 className="font-semibold">Creative Ideas</h3>
-            </div>
-            <p className="text-sm text-dark-muted">
-              Brainstorm ideas, get creative suggestions, and explore new concepts.
-            </p>
-          </div>
-
-          <div className="bg-dark-sidebar p-4 rounded-lg text-left">
-            <div className="flex items-center gap-3 mb-2">
-              <svg
-                className="w-5 h-5 text-dark-hover"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
-                />
-              </svg>
-              <h3 className="font-semibold">Learning</h3>
-            </div>
-            <p className="text-sm text-dark-muted">
-              Learn new topics, get explanations, and expand your knowledge.
-            </p>
-          </div>
-
-          <div className="bg-dark-sidebar p-4 rounded-lg text-left">
-            <div className="flex items-center gap-3 mb-2">
-              <svg
-                className="w-5 h-5 text-dark-hover"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                />
-              </svg>
-              <h3 className="font-semibold">Conversation</h3>
-            </div>
-            <p className="text-sm text-dark-muted">
-              Have natural conversations with context-aware responses.
-            </p>
-          </div>
+        {/* Example prompts */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-8">
+          {EXAMPLE_PROMPTS.map((prompt) => (
+            <button
+              key={prompt}
+              onClick={handleNewChat}
+              className="text-left px-4 py-3 bg-dark-sidebar hover:bg-dark-chat border border-dark-chat hover:border-dark-hover rounded-lg text-sm text-dark-muted hover:text-dark-text transition-all"
+            >
+              {prompt}
+            </button>
+          ))}
         </div>
 
+        {/* New chat button */}
         <button
           onClick={handleNewChat}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-dark-hover hover:bg-opacity-90 rounded-lg font-medium transition-colors"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-dark-hover hover:bg-opacity-90 rounded-lg font-medium transition-colors text-white mb-10"
         >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M12 4v16m8-8H4"
-            />
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Start New Chat
+          Mulai Chat Baru
         </button>
+
+        {/* Capabilities */}
+        <div className="border-t border-dark-chat pt-8">
+          <p className="text-xs text-dark-muted uppercase tracking-widest mb-4">Yang bisa ALAI lakukan</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+            {CAPABILITIES.map(({ icon, title, desc }) => (
+              <div key={title} className="bg-dark-sidebar border border-dark-chat rounded-lg p-4">
+                <div className="flex items-center gap-2.5 mb-1.5">
+                  <svg className="w-4 h-4 text-dark-hover shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon} />
+                  </svg>
+                  <h3 className="text-sm font-semibold text-dark-text">{title}</h3>
+                </div>
+                <p className="text-xs text-dark-muted leading-relaxed">{desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
