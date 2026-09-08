@@ -32,7 +32,7 @@ services:
       MICROSOFT_REDIRECT_URI: ${MICROSOFT_REDIRECT_URI:-http://localhost:8000/api/auth/callback}
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5}
-      CORS_ORIGINS: '["http://localhost:3000", "http://localhost:80"]'
+      CORS_ORIGINS: '["http://localhost:3000", "http://localhost:80", "https://alai.antaragpt.com"]'
     ports:
       - "8000:8000"
     depends_on:
