@@ -570,6 +570,34 @@ async def move_document_folder(
     return {"id": attachment.id, "folder_id": attachment.folder_id}
 
 
+class ChangeVisibilityBody(BaseModel):
+    is_company_doc: bool
+
+
+@router.patch("/{document_id}/visibility")
+async def change_document_visibility(
+    document_id: int,
+    body: ChangeVisibilityBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle a document between personal and company visibility."""
+    result = await db.execute(
+        select(Attachment).where(Attachment.id == document_id)
+    )
+    attachment = result.scalar_one_or_none()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if attachment.user_id != user.id and not attachment.is_company_doc:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    attachment.is_company_doc = body.is_company_doc
+    # Clear folder when moving between visibility scopes (folders are scoped)
+    attachment.folder_id = None
+    await db.commit()
+    return {"id": attachment.id, "is_company_doc": attachment.is_company_doc}
+
+
 @router.get("/search")
 async def search_documents(
     query: str,

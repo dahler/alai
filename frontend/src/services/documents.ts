@@ -243,4 +243,8 @@ export const documentsService = {
     const response = await api.post('/documents/redetect-connections')
     return response.data
   },
+
+  async changeVisibility(documentId: number, isCompanyDoc: boolean): Promise<void> {
+    await api.patch(`/documents/${documentId}/visibility`, { is_company_doc: isCompanyDoc })
+  },
 }
