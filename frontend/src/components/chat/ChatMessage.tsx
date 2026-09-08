@@ -432,6 +432,8 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
   const [loading, setLoading] = useState(true)
   const highlightRef = useRef<HTMLDivElement>(null)
   const fileUrl = source.stored_filename ? `/api/uploads/${source.stored_filename}` : null
+  const fileType = getFileType(source.filename)
+  const isPdf = fileType === 'pdf'
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -448,7 +450,6 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
       .finally(() => setLoading(false))
   }, [source.document_id])
 
-  // Scroll to highlighted chunk once chunks are rendered
   useEffect(() => {
     if (!loading && highlightRef.current) {
       setTimeout(() => {
@@ -463,14 +464,20 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
     return false
   }
 
+  const citedChunk = chunks.find(isMatch)
+  // #page=N makes browser PDF viewer jump directly to the cited page
+  const pdfSrc = fileUrl && isPdf
+    ? `${fileUrl}${citedChunk?.page_start ? `#page=${citedChunk.page_start}` : ''}`
+    : null
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
       onClick={onClose}
     >
       <div
-        className="bg-dark-sidebar rounded-xl shadow-2xl flex flex-col w-full max-w-4xl"
-        style={{ height: '85vh' }}
+        className={`bg-dark-sidebar rounded-xl shadow-2xl flex flex-col w-full ${isPdf ? 'max-w-6xl' : 'max-w-3xl'}`}
+        style={{ height: '88vh' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -480,6 +487,11 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
               {source.number}
             </span>
             <span className="text-sm text-dark-text font-medium truncate">{source.filename}</span>
+            {citedChunk?.page_start ? (
+              <span className="flex-shrink-0 text-[10px] text-dark-muted bg-dark-chat rounded px-1.5 py-0.5">
+                p.{citedChunk.page_start}
+              </span>
+            ) : null}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0 ml-3">
             {fileUrl && (
@@ -487,7 +499,7 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
                 href={fileUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Open original document"
+                title="Open in new tab"
                 className="p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -495,11 +507,8 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
                 </svg>
               </a>
             )}
-            <button
-              onClick={onClose}
-              title="Close"
-              className="p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors"
-            >
+            <button onClick={onClose} title="Close"
+              className="p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
@@ -507,63 +516,91 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
           </div>
         </div>
 
-        {/* Chunk list body */}
-        <div className="flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="flex items-center gap-2 text-dark-muted text-sm">
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Loading document…
+        {/* Body — split when PDF, single column otherwise */}
+        <div className="flex-1 flex min-h-0 overflow-hidden rounded-b-xl">
+
+          {/* Left: chunk list with yellow highlight */}
+          <div className={`${isPdf ? 'w-80 flex-shrink-0 border-r border-dark-chat' : 'flex-1'} overflow-y-auto`}>
+            {loading ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="flex items-center gap-2 text-dark-muted text-sm">
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Loading…
+                </div>
               </div>
-            </div>
-          ) : chunks.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-dark-muted text-sm">
-              Document content not available
-            </div>
-          ) : (
-            <div className="p-4 space-y-2">
-              {chunks.map((chunk) => {
-                const highlighted = isMatch(chunk)
-                return (
-                  <div
-                    key={chunk.id}
-                    ref={highlighted ? highlightRef : undefined}
-                    className={`rounded-lg p-4 border transition-colors ${
-                      highlighted
-                        ? 'border-amber-400/40 bg-amber-400/10'
-                        : 'border-transparent bg-dark-chat/20 hover:border-dark-chat/60'
-                    }`}
-                  >
-                    {chunk.heading_context && (
-                      <p className="text-[10px] text-dark-muted font-semibold uppercase tracking-wider mb-2">
-                        {chunk.heading_context}
+            ) : chunks.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-dark-muted text-sm">
+                Content not available
+              </div>
+            ) : (
+              <div className="p-3 space-y-1.5">
+                {chunks.map((chunk) => {
+                  const highlighted = isMatch(chunk)
+                  return (
+                    <div
+                      key={chunk.id}
+                      ref={highlighted ? highlightRef : undefined}
+                      className={`rounded-lg px-3 py-2.5 border transition-colors cursor-default ${
+                        highlighted
+                          ? 'border-amber-400/50 bg-amber-400/10'
+                          : 'border-transparent hover:bg-dark-chat/30'
+                      }`}
+                    >
+                      {chunk.heading_context && (
+                        <p className="text-[10px] text-dark-muted font-semibold uppercase tracking-wider mb-1 truncate">
+                          {chunk.heading_context}
+                        </p>
+                      )}
+                      {highlighted && (
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                          <span className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider">
+                            Cited passage
+                          </span>
+                        </div>
+                      )}
+                      <p className={`text-xs leading-relaxed line-clamp-${highlighted ? '6' : '3'} ${
+                        highlighted ? 'text-dark-text' : 'text-dark-muted'
+                      }`}>
+                        {chunk.chunk_text}
                       </p>
-                    )}
-                    {highlighted && (
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-                        <span className="text-[10px] text-amber-400/90 font-semibold uppercase tracking-wider">
-                          Cited passage
-                        </span>
-                      </div>
-                    )}
-                    <div className={`text-sm leading-relaxed prose prose-sm max-w-none ${
-                      highlighted ? 'text-dark-text' : 'text-dark-muted'
-                    }`}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{chunk.chunk_text}</ReactMarkdown>
+                      {chunk.page_start > 0 && (
+                        <p className="text-[10px] text-dark-muted mt-1.5 opacity-50">
+                          p.{chunk.page_start}{chunk.page_end !== chunk.page_start ? `–${chunk.page_end}` : ''}
+                        </p>
+                      )}
                     </div>
-                    {chunk.page_start > 0 && (
-                      <p className="text-[10px] text-dark-muted mt-3 opacity-50">
-                        Halaman {chunk.page_start}
-                        {chunk.page_end !== chunk.page_start ? `–${chunk.page_end}` : ''}
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Right: PDF viewer (PDF files only) */}
+          {isPdf && (
+            <div className="flex-1 bg-dark-bg">
+              {pdfSrc ? (
+                <iframe
+                  key={pdfSrc}
+                  src={pdfSrc}
+                  className="w-full h-full rounded-br-xl"
+                  title={source.filename}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-dark-muted text-sm">
+                  PDF not available
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Image viewer (non-PDF, non-chunk) */}
+          {!isPdf && fileType === 'image' && fileUrl && (
+            <div className="flex items-center justify-center p-4 bg-dark-bg">
+              <img src={fileUrl} alt={source.filename} className="max-w-full max-h-full object-contain rounded" />
             </div>
           )}
         </div>
