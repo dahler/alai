@@ -38,7 +38,7 @@ export default function MainLayout() {
               />
             </svg>
           </button>
-          <h1 className="text-lg font-bold text-dark-hover">ALAI</h1>
+          <h1 className="text-lg font-bold text-gradient">ALAI</h1>
           <div className="w-10" /> {/* Spacer for centering */}
         </header>
 

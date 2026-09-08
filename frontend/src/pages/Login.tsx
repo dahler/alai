@@ -23,7 +23,7 @@ export default function Login() {
               />
             </svg>
           </div>
-          <h1 className="text-3xl font-bold text-dark-text tracking-tight">
+          <h1 className="text-3xl font-bold tracking-tight text-gradient">
             ALAI
           </h1>
           <p className="text-dark-muted mt-1 text-sm">Enterprise AI Assistant · Antara ETP</p>

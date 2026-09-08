@@ -57,8 +57,8 @@ export default function Home() {
           </svg>
         </div>
 
-        <h1 className="text-3xl font-bold text-dark-text mb-1">
-          Halo, <span className="text-dark-hover">{firstName}</span>!
+        <h1 className="text-3xl font-bold mb-1">
+          Halo, <span className="text-gradient">{firstName}</span>!
         </h1>
         <p className="text-dark-muted mb-8">Apa yang bisa ALAI bantu hari ini?</p>
 

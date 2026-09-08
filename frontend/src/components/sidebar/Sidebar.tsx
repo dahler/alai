@@ -89,7 +89,7 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
                 </svg>
               </div>
               <div>
-                <h1 className="text-sm font-bold text-dark-text leading-none">ALAI</h1>
+                <h1 className="text-sm font-bold leading-none text-gradient">ALAI</h1>
                 <p className="text-[10px] text-dark-muted leading-none mt-0.5">Antara ETP</p>
               </div>
             </div>

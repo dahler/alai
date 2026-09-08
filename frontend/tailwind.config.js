@@ -7,16 +7,24 @@ export default {
   darkMode: 'class',
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        mono: ['Fira Code', 'Cascadia Code', 'Monaco', 'Consolas', 'monospace'],
+      },
       colors: {
         dark: {
-          bg: '#27272a',
-          sidebar: '#18181b',
-          chat: '#3f3f46',
-          input: '#27272a',
-          hover: '#6366f1',
-          text: '#f4f4f5',
-          muted: '#a1a1aa',
+          bg:      '#111118',
+          sidebar: '#0a0b10',
+          chat:    '#1c1d28',
+          input:   '#111118',
+          hover:   '#7c6ef8',
+          text:    '#e8eaf2',
+          muted:   '#8082a0',
         },
+      },
+      boxShadow: {
+        'glow': '0 0 20px -4px rgba(124, 110, 248, 0.3)',
+        'glow-sm': '0 0 12px -3px rgba(124, 110, 248, 0.2)',
       },
     },
   },

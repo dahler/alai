@@ -3,13 +3,13 @@
 @tailwind utilities;
 
 :root {
-  --dark-bg: #27272a;
-  --dark-sidebar: #18181b;
-  --dark-chat: #3f3f46;
-  --dark-input: #27272a;
-  --dark-hover: #6366f1;
-  --dark-text: #f4f4f5;
-  --dark-muted: #a1a1aa;
+  --dark-bg:      #111118;
+  --dark-sidebar: #0a0b10;
+  --dark-chat:    #1c1d28;
+  --dark-input:   #111118;
+  --dark-hover:   #7c6ef8;
+  --dark-text:    #e8eaf2;
+  --dark-muted:   #8082a0;
 }
 
 * {
@@ -24,15 +24,20 @@ html, body, #root {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background-color: var(--dark-bg);
   color: var(--dark-text);
   line-height: 1.6;
+  font-size: 15px;
+  letter-spacing: -0.01em;
 }
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -41,43 +46,51 @@ body {
 
 ::-webkit-scrollbar-thumb {
   background: var(--dark-chat);
-  border-radius: 3px;
+  border-radius: 99px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--dark-muted);
 }
 
-/* Code styling */
-code {
-  font-family: 'Fira Code', 'Monaco', 'Consolas', 'Courier New', monospace;
+/* Code font */
+code, kbd, pre {
+  font-family: 'Fira Code', 'Cascadia Code', 'Monaco', 'Consolas', 'Courier New', monospace;
+  font-feature-settings: 'liga' 1, 'calt' 1;
 }
 
 /* Prose overrides for dark theme */
 .prose {
   color: var(--dark-text);
+  font-size: 0.9375rem;
+  line-height: 1.7;
 }
 
 .prose strong {
   color: var(--dark-text);
+  font-weight: 600;
 }
 
 .prose code {
-  color: #f472b6;
+  color: #c4b5fd;
+  font-size: 0.875em;
 }
 
 .prose pre {
-  background-color: #1a1a1d;
-  border-radius: 0.5rem;
+  background-color: #080810;
+  border: 1px solid var(--dark-chat);
+  border-radius: 0.625rem;
 }
 
 .prose blockquote {
   border-left-color: var(--dark-hover);
   color: var(--dark-muted);
+  font-style: italic;
 }
 
 .prose a {
   color: var(--dark-hover);
+  text-decoration: none;
 }
 
 .prose a:hover {
@@ -85,11 +98,12 @@ code {
 }
 
 .prose hr {
-  border-color: var(--dark-muted);
+  border-color: var(--dark-chat);
+  opacity: 0.6;
 }
 
 .prose thead {
-  border-bottom-color: var(--dark-muted);
+  border-bottom-color: var(--dark-chat);
 }
 
 .prose tbody tr {
@@ -98,22 +112,46 @@ code {
 
 .prose th {
   color: var(--dark-text);
+  font-weight: 600;
 }
 
-/* Remove default list styling when using custom components */
 .prose ul, .prose ol {
   list-style-position: inside;
 }
 
-/* Smooth animations */
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  color: var(--dark-text);
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+/* Heading tracking */
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.02em;
+}
+
+/* Smooth transitions */
 .transition-all {
   transition-property: all;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
 }
 
-/* Selection color */
+/* Selection */
 ::selection {
-  background-color: var(--dark-hover);
-  color: white;
+  background-color: rgba(124, 110, 248, 0.35);
+  color: var(--dark-text);
+}
+
+/* Accent gradient text utility */
+.text-gradient {
+  background: linear-gradient(135deg, #7c6ef8 0%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Subtle glow on focus */
+input:focus, textarea:focus {
+  outline: none;
 }
