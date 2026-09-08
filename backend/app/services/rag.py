@@ -21,7 +21,7 @@ import re
 import time
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, or_, and_, tuple_
+from sqlalchemy import select, delete, or_, and_, tuple_, func, literal
 
 from app.config import settings
 from app.models.document_chunk import DocumentChunk
@@ -50,11 +50,11 @@ def _mem_mb() -> int:
 
 # Approximate characters per token for bge-m3 / typical text
 _CHARS_PER_TOKEN = 4
-_TARGET_TOKENS_MIN = 500
-_TARGET_TOKENS_MAX = 1000
-_CHUNK_MAX_CHARS = _TARGET_TOKENS_MAX * _CHARS_PER_TOKEN   # 4000
-_CHUNK_MIN_CHARS = _TARGET_TOKENS_MIN * _CHARS_PER_TOKEN   # 2000
-_CHUNK_OVERLAP_CHARS = 200
+_TARGET_TOKENS_MIN = 300
+_TARGET_TOKENS_MAX = 600
+_CHUNK_MAX_CHARS = 2400
+_CHUNK_MIN_CHARS = 1200
+_CHUNK_OVERLAP_CHARS = 150
 
 
 def _title_ngrams(title: str, window: int = 5) -> list[str]:
@@ -69,7 +69,10 @@ def _title_ngrams(title: str, window: int = 5) -> list[str]:
     words = re.findall(r'[\w]+', title.lower())
     if len(words) <= window:
         return [' '.join(words)] if len(words) >= 3 else []
-    return [' '.join(words[i: i + window]) for i in range(len(words) - window + 1)]
+    return [
+        ' '.join(words[i: i + window])
+        for i in range(len(words) - window + 1)
+    ]
 
 
 class RAGService:
@@ -243,7 +246,7 @@ class RAGService:
             for raw_text in _chunk_section(sec.content):
                 pending.append((sid, raw_text, heading_ctx, ps, pe))
 
-        # Save full text and title for connection detection before freeing parsed
+        # Save full text and title for connection detection before freeing
         full_text = parsed.full_markdown or ""
         doc_title = parsed.title or ""
 
@@ -353,6 +356,10 @@ class RAGService:
 
         access = _access_filter(user_id)
 
+        # Extract keywords for trigram pre-filtering and hybrid scoring
+        keywords = _extract_keywords(query)
+        log(f"Keywords: {keywords[:8]}")
+
         # ------------------------------------------------------------------
         # Step 1: Find relevant sections via summary embedding
         # ------------------------------------------------------------------
@@ -396,8 +403,22 @@ class RAGService:
         relevant_section_ids = expanded_section_ids
 
         # ------------------------------------------------------------------
-        # Step 2: Search chunks (vector) — prefer relevant sections
+        # Step 2: Search chunks — vector + trigram pre-filter
         # ------------------------------------------------------------------
+        # Build trigram score expression (DB-computed, uses GIN index).
+        # word_similarity(keyword, text) is asymmetric: measures how well
+        # the keyword appears as a word within the chunk text.
+        if keywords:
+            trgm_expr = func.greatest(*[
+                func.coalesce(
+                    func.word_similarity(kw, DocumentChunk.chunk_text),
+                    0.0,
+                )
+                for kw in keywords[:6]
+            ]).label("trgm_score")
+        else:
+            trgm_expr = literal(0.0).label("trgm_score")
+
         chunk_q = (
             select(
                 DocumentChunk,
@@ -405,6 +426,7 @@ class RAGService:
                 DocumentChunk.embedding.cosine_distance(query_emb).label(
                     "distance"
                 ),
+                trgm_expr,
             )
             .join(Attachment, Attachment.id == DocumentChunk.attachment_id)
             .where(access)
@@ -414,40 +436,74 @@ class RAGService:
                 Attachment.original_filename.ilike(f"%{source_filter}%")
             )
 
+        # Trigram pre-filter: any keyword must have word_similarity > 0.1.
+        # This uses the GIN index and narrows candidates before vector sort.
+        # Only applied when keywords are present and meaningful.
+        trgm_filter = (
+            or_(*[
+                func.word_similarity(kw, DocumentChunk.chunk_text) > 0.1
+                for kw in keywords[:6]
+            ])
+            if keywords else None
+        )
+
         # When a full group was expanded fetch enough to cover all sections
         fetch_k = (
             max(top_k * 8, len(relevant_section_ids) * 2)
             if was_expanded
             else top_k * 4
         )
-        if relevant_section_ids:
-            in_sections = chunk_q.where(
-                DocumentChunk.section_id.in_(relevant_section_ids)
-            ).order_by("distance").limit(fetch_k)
-            rows = (await self.db.execute(in_sections)).all()
-            if len(rows) < top_k:
-                # Supplement with global search
-                global_q = chunk_q.order_by("distance").limit(
-                    fetch_k - len(rows)
+
+        async def _run_chunk_q(base_q, section_ids, limit):
+            """Run chunk query, optionally narrowed to section_ids."""
+            q = base_q
+            if section_ids:
+                q = q.where(
+                    DocumentChunk.section_id.in_(section_ids)
                 )
-                extra = (await self.db.execute(global_q)).all()
-                seen = {r[0].id for r in rows}
-                rows += [r for r in extra if r[0].id not in seen]
-        else:
-            rows = (
+            if trgm_filter is not None:
+                q = q.where(trgm_filter)
+            return (
+                await self.db.execute(q.order_by("distance").limit(limit))
+            ).all()
+
+        rows = await _run_chunk_q(
+            chunk_q, relevant_section_ids, fetch_k
+        )
+
+        # Fallback 1: drop trigram filter if not enough results
+        if trgm_filter is not None and len(rows) < top_k:
+            log(
+                f"Trigram filter too narrow ({len(rows)} hits) "
+                "— retrying without it"
+            )
+            rows = await _run_chunk_q(
+                chunk_q.filter(True),   # reset trgm_filter
+                relevant_section_ids,
+                fetch_k,
+            )
+
+        # Fallback 2: global search if sections gave too few results
+        if len(rows) < top_k:
+            global_q = chunk_q
+            if trgm_filter is not None and len(rows) == 0:
+                pass  # already retried, skip trgm
+            global_rows = (
                 await self.db.execute(
-                    chunk_q.order_by("distance").limit(fetch_k)
+                    global_q.order_by("distance").limit(fetch_k)
                 )
             ).all()
+            seen = {r[0].id for r in rows}
+            rows += [r for r in global_rows if r[0].id not in seen]
 
         if not rows:
             return []
 
         # ------------------------------------------------------------------
-        # Step 3: BM25 re-rank
+        # Step 3: Hybrid re-rank (70 % vector + 30 % trigram)
         # ------------------------------------------------------------------
         rerank_k = min(top_k * 2, len(rows)) if was_expanded else top_k
-        rows = _bm25_rerank(query, rows, rerank_k)
+        rows = _hybrid_rerank(rows, rerank_k)
 
         # ------------------------------------------------------------------
         # Step 4: Expand context
@@ -456,7 +512,9 @@ class RAGService:
         # unrelated content from neighbouring sections.
         # ------------------------------------------------------------------
         if was_expanded:
-            expanded_texts = [chunk.chunk_text or "" for chunk, _, _ in rows]
+            expanded_texts = [
+                chunk.chunk_text or "" for chunk, *_ in rows
+            ]
         else:
             expanded_texts = await self._expand_by_section(rows)
 
@@ -464,7 +522,8 @@ class RAGService:
         # Step 5: Build results
         # ------------------------------------------------------------------
         results = []
-        for i, (chunk, filename, distance) in enumerate(rows):
+        for i, (chunk, filename, distance, trgm) in enumerate(rows):
+            hybrid = round(0.7 * (1 - distance) + 0.3 * (trgm or 0.0), 4)
             results.append({
                 "chunk_id": chunk.id,
                 "chunk_text": expanded_texts[i],
@@ -472,16 +531,16 @@ class RAGService:
                 "heading_context": chunk.heading_context,
                 "page_start": chunk.page_start,
                 "page_end": chunk.page_end,
-                "similarity": round(1 - distance, 4),
+                "similarity": hybrid,
                 "attachment_id": chunk.attachment_id,
                 "filename": filename or "Unknown",
                 "is_company_doc": chunk.is_company_doc,
                 "section_id": chunk.section_id,
             })
             log(
-                f"  [{1 - distance:.2%}] {filename} "
-                f"(chunk {chunk.chunk_index}, "
-                f"{len(expanded_texts[i])} chars expanded)"
+                f"  [vec={1-distance:.0%} trgm={trgm or 0:.0%}"
+                f" hybrid={hybrid:.0%}] {filename} "
+                f"chunk {chunk.chunk_index}"
             )
 
         # ------------------------------------------------------------------
@@ -511,7 +570,11 @@ class RAGService:
             return
 
         rows = (await self.db.execute(
-            select(Attachment.id, Attachment.original_filename, Attachment.doc_title)
+            select(
+                Attachment.id,
+                Attachment.original_filename,
+                Attachment.doc_title,
+            )
             .where(
                 Attachment.is_embedded.is_(True),
                 Attachment.id != attachment_id,
@@ -735,7 +798,7 @@ class RAGService:
         # --- Step 1: fetch all chunks in matched sections ---
         section_ids = {
             chunk.section_id
-            for chunk, _, _ in rows
+            for chunk, *_ in rows
             if chunk.section_id is not None
         }
         section_chunks: dict[int, list[str]] = {}
@@ -760,7 +823,7 @@ class RAGService:
         # --- Step 2: build per-row section text, note which need fallback ---
         section_texts: list[str] = []
         needs_fallback: list[bool] = []
-        for chunk, _, _ in rows:
+        for chunk, *_ in rows:
             if chunk.section_id and chunk.section_id in section_chunks:
                 text = "\n\n".join(
                     t for t in section_chunks[chunk.section_id] if t.strip()
@@ -774,9 +837,9 @@ class RAGService:
         needed: set[tuple] = set()
         result_keys = {
             (chunk.attachment_id, chunk.chunk_index)
-            for chunk, _, _ in rows
+            for chunk, *_ in rows
         }
-        for (chunk, _, _), short in zip(rows, needs_fallback):
+        for (chunk, *_), short in zip(rows, needs_fallback):
             if not short:
                 continue
             for delta in range(-fallback_window, fallback_window + 1):
@@ -808,7 +871,7 @@ class RAGService:
 
         # --- Step 4: supplement short sections with neighbours ---
         expanded: list[str] = []
-        for (chunk, _, _), text, short in zip(
+        for (chunk, *_), text, short in zip(
             rows, section_texts, needs_fallback
         ):
             if not short:
@@ -844,12 +907,12 @@ class RAGService:
         # Index of chunks already in the result set — their text is known
         result_map: dict[tuple, str] = {
             (c.attachment_id, c.chunk_index): c.chunk_text or ""
-            for c, _, _ in rows
+            for c, *_ in rows
         }
 
         # Collect neighbour keys that are NOT already in results
         needed: set[tuple] = set()
-        for chunk, _, _ in rows:
+        for chunk, *_ in rows:
             for delta in range(-window, window + 1):
                 if delta == 0:
                     continue
@@ -880,7 +943,7 @@ class RAGService:
 
         # Build expanded text for each row
         expanded: list[str] = []
-        for chunk, _, _ in rows:
+        for chunk, *_ in rows:
             parts: list[str] = []
             for delta in range(-window, window + 1):
                 key = (chunk.attachment_id, chunk.chunk_index + delta)
@@ -1191,39 +1254,40 @@ def _attachment_access_filter(user_id: Optional[int]):
     return Attachment.is_company_doc == True  # noqa: E712
 
 
-def _bm25_rerank(
-    query: str,
-    rows: list,
-    top_k: int,
-) -> list:
-    """Re-rank chunk rows using BM25 scores combined with vector distance."""
-    try:
-        from rank_bm25 import BM25Okapi
+_KW_STOP = {
+    # Indonesian
+    "yang", "di", "ke", "dari", "dan", "atau", "dengan", "untuk", "pada",
+    "ini", "itu", "ada", "adalah", "dalam", "oleh", "akan", "sudah", "juga",
+    "tidak", "bisa", "bagi", "agar", "serta", "kami", "kita", "mereka",
+    "siapa", "apa", "bagaimana", "berapa", "apakah", "dimana", "kapan",
+    "mengapa", "karena", "sehingga", "namun", "tetapi", "bahwa", "telah",
+    # English
+    "the", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "will", "would", "could", "should", "may",
+    "might", "a", "an", "in", "on", "at", "to", "for", "of", "by", "with",
+    "how", "what", "who", "when", "where", "why", "and", "or", "not", "no",
+}
 
-        tokens = query.lower().split()
-        corpus = [
-            (chunk.chunk_text or "").lower().split()
-            for chunk, _, _ in rows
-        ]
-        bm25 = BM25Okapi(corpus)
-        bm25_scores = bm25.get_scores(tokens)
 
-        # Normalise BM25 to [0,1]
-        max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
+def _extract_keywords(query: str) -> list[str]:
+    """Return meaningful tokens from query for trigram pre-filtering."""
+    words = re.findall(r'[\w]+', query.lower())
+    return [w for w in words if len(w) >= 3 and w not in _KW_STOP]
 
-        combined = []
-        for i, (chunk, fname, dist) in enumerate(rows):
-            vec_score = 1 - dist          # higher = better
-            kw_score = bm25_scores[i] / max_bm25
-            score = 0.8 * vec_score + 0.2 * kw_score
-            combined.append((score, chunk, fname, dist))
 
-        combined.sort(key=lambda x: x[0], reverse=True)
-        return [(c, f, d) for _, c, f, d in combined[:top_k]]
+def _hybrid_rerank(rows: list, top_k: int) -> list:
+    """
+    Rerank using 70 % vector cosine + 30 % DB-computed trigram similarity.
 
-    except ImportError:
-        # rank_bm25 not installed — fall back to pure vector order
-        return rows[:top_k]
+    Rows are 4-tuples: (DocumentChunk, filename, cosine_distance, trgm_score).
+    Higher score = better match.
+    """
+    scored = [
+        (0.7 * (1.0 - dist) + 0.3 * (trgm or 0.0), chunk, fname, dist, trgm)
+        for chunk, fname, dist, trgm in rows
+    ]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [(c, f, d, t) for _, c, f, d, t in scored[:top_k]]
 
 
 def _attachment_to_dict(att: Attachment) -> dict:
