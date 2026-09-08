@@ -252,7 +252,9 @@ async def upload_documents_batch(
             saved.append({
                 "file": file,
                 "attachment": attachment,
-                "att_id": attachment.id,  # snapshot PK before any later expiry
+                "att_id": attachment.id,            # snapshot before any later expiry
+                "file_path": attachment.file_path,
+                "original_filename": attachment.original_filename or "",
                 "saved_filename": saved_filename,
             })
         except Exception as exc:
@@ -277,8 +279,7 @@ async def upload_documents_batch(
 
         docling = DoclingService()
         batch_items = [
-            (item["attachment"].file_path,
-             item["attachment"].original_filename or "")
+            (item["file_path"], item["original_filename"])
             for item in chunk
         ]
         parsed_chunk = await docling.parse_batch(batch_items)
