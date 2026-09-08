@@ -3,95 +3,98 @@ import { useNavigate } from 'react-router-dom'
 import { documentsService, DocGraphNode, DocGraphData } from '../services/documents'
 
 interface SimNode extends DocGraphNode {
-  x: number
-  y: number
-  vx: number
-  vy: number
+  x: number; y: number; vx: number; vy: number
   pinned?: boolean
   connectionCount: number
+  isHub: boolean
 }
 
-interface SimEdge {
-  sourceId: number
-  targetId: number
-  weight: number
+interface SimEdge { sourceId: number; targetId: number; weight: number }
+
+// ─── Hub detection ─────────────────────────────────────────────────────────────
+// A node is a "hub" if its total connection count (in + out) >= 2.
+// If all nodes have >=2, lower the bar to the median.
+
+function computeHubThreshold(connMap: Map<number, number>): number {
+  const counts = [...connMap.values()].sort((a, b) => a - b)
+  if (counts.length === 0) return 2
+  const median = counts[Math.floor(counts.length / 2)]
+  return Math.max(2, median)
 }
 
-// ─── Force simulation ────────────────────────────────────────────────────────
+// ─── Force simulation ──────────────────────────────────────────────────────────
 
-const MAX_VEL = 80
+const MAX_VEL = 70
 
-function runStep(nodes: SimNode[], edges: SimEdge[], cx: number, cy: number, alpha: number) {
-  // Repulsion between all pairs
+function runStep(
+  nodes: SimNode[],
+  edges: SimEdge[],
+  cx: number, cy: number,
+  alpha: number,
+) {
+  // Repulsion
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
       const dx = nodes[j].x - nodes[i].x || 0.1
       const dy = nodes[j].y - nodes[i].y || 0.1
       const dist2 = Math.max(dx * dx + dy * dy, 1)
-      const dist = Math.sqrt(dist2)
-      const f = (alpha * 18000) / dist2
-      const fx = (dx / dist) * f
-      const fy = (dy / dist) * f
+      const dist  = Math.sqrt(dist2)
+      const f     = (alpha * 20000) / dist2
+      const fx = (dx / dist) * f, fy = (dy / dist) * f
       nodes[i].vx -= fx; nodes[i].vy -= fy
       nodes[j].vx += fx; nodes[j].vy += fy
     }
   }
 
-  // Spring attraction along edges
+  // Spring along edges — shorter ideal distance within the same zone
   const map = new Map(nodes.map((n) => [n.id, n]))
   for (const e of edges) {
-    const s = map.get(e.sourceId)
-    const t = map.get(e.targetId)
+    const s = map.get(e.sourceId), t = map.get(e.targetId)
     if (!s || !t) continue
-    const dx = t.x - s.x
-    const dy = t.y - s.y
+    const dx = t.x - s.x, dy = t.y - s.y
     const dist = Math.sqrt(dx * dx + dy * dy) || 1
-    const f = (dist - 280) * alpha * 0.15
-    const fx = (dx / dist) * f
-    const fy = (dy / dist) * f
+    const ideal = s.isHub !== t.isHub ? 320 : 200   // cross-zone edges are longer
+    const f  = (dist - ideal) * alpha * 0.12
+    const fx = (dx / dist) * f, fy = (dy / dist) * f
     s.vx += fx; s.vy += fy
     t.vx -= fx; t.vy -= fy
   }
 
-  // Gravity toward center + velocity damping
+  // Zone separation + vertical centering + damping
   for (const n of nodes) {
     if (n.pinned) { n.vx = 0; n.vy = 0; continue }
-    n.vx += (cx - n.x) * alpha * 0.025
-    n.vy += (cy - n.y) * alpha * 0.025
+    // Push hubs to left third, non-hubs to right third
+    const zoneX = n.isHub ? cx * 0.42 : cx * 1.58
+    n.vx += (zoneX - n.x) * alpha * 0.14
+    n.vy += (cy    - n.y) * alpha * 0.03
     n.vx = Math.max(-MAX_VEL, Math.min(MAX_VEL, n.vx)) * 0.78
     n.vy = Math.max(-MAX_VEL, Math.min(MAX_VEL, n.vy)) * 0.78
-    n.x += n.vx
-    n.y += n.vy
-    if (!isFinite(n.x)) n.x = cx
+    n.x += n.vx; n.y += n.vy
+    if (!isFinite(n.x)) n.x = zoneX
     if (!isFinite(n.y)) n.y = cy
   }
 }
 
-// ─── Visual constants ────────────────────────────────────────────────────────
+// ─── Visual constants ──────────────────────────────────────────────────────────
 
-const C_DEFAULT  = '#6366f1'   // indigo
+const C_HUB      = '#818cf8'   // indigo-400  — hub nodes
+const C_LEAF     = '#38bdf8'   // sky-400     — non-hub nodes
 const C_SELECTED = '#f59e0b'   // amber
-const C_OUT      = '#a78bfa'   // violet  — referenced by selected
-const C_IN       = '#34d399'   // emerald — references selected
-
-const EDGE_DEFAULT    = 'rgba(99,102,241,0.22)'
-const EDGE_OUT        = 'rgba(167,139,250,0.75)'
-const EDGE_IN         = 'rgba(52,211,153,0.75)'
-const ARROW_DEFAULT   = '#4f46e5'
-const ARROW_OUT       = '#a78bfa'
-const ARROW_IN        = '#34d399'
+const C_OUT      = '#c084fc'   // purple-400  — nodes referenced by selected
+const C_IN       = '#34d399'   // emerald-400 — nodes that reference selected
 
 function nodeRadius(n: SimNode) {
-  return Math.max(14, Math.min(30, 14 + Math.log2(n.connectionCount + 1) * 5))
+  const base = n.isHub ? 18 : 13
+  return Math.max(base, Math.min(34, base + Math.log2(n.connectionCount + 1) * 4.5))
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Component ─────────────────────────────────────────────────────────────────
 
 export function DocumentGraph() {
   const navigate = useNavigate()
 
-  const [graphData, setGraphData] = useState<DocGraphData>({ nodes: [], edges: [] })
-  const [isLoading, setIsLoading] = useState(true)
+  const [graphData, setGraphData]       = useState<DocGraphData>({ nodes: [], edges: [] })
+  const [isLoading, setIsLoading]       = useState(true)
   const [isRedetecting, setIsRedetecting] = useState(false)
   const [redetectResult, setRedetectResult] = useState<string | null>(null)
 
@@ -102,52 +105,48 @@ export function DocumentGraph() {
   const [tick, setTick] = useState(0)
 
   const containerRef = useRef<HTMLDivElement>(null)
-  const [svgSize, setSvgSize] = useState({ w: 800, h: 600 })
+  const [svgSize, setSvgSize] = useState({ w: 900, h: 650 })
 
-  const [transform, setTransform]       = useState({ x: 0, y: 0, k: 1 })
-  const [selectedId, setSelectedId]     = useState<number | null>(null)
-  const [hoveredId, setHoveredId]       = useState<number | null>(null)
-  const [tooltipNode, setTooltipNode]   = useState<{ id: number; x: number; y: number } | null>(null)
+  const [transform, setTransform]     = useState({ x: 0, y: 0, k: 1 })
+  const [selectedId, setSelectedId]   = useState<number | null>(null)
+  const [hoveredId, setHoveredId]     = useState<number | null>(null)
+  const [tooltipPos, setTooltipPos]   = useState<{ x: number; y: number; label: string } | null>(null)
 
   const nodeDragRef = useRef<{ id: number; ox: number; oy: number; mx: number; my: number } | null>(null)
   const panDragRef  = useRef<{ mx: number; my: number; tx: number; ty: number } | null>(null)
 
-  // ── Data loading ─────────────────────────────────────────────────────────
+  // ── Data ──────────────────────────────────────────────────────────────────
 
   const loadData = useCallback(() => {
     setIsLoading(true)
     documentsService.getConnections()
-      .then((data) => { setGraphData(data); setIsLoading(false) })
+      .then((d) => { setGraphData(d); setIsLoading(false) })
       .catch(() => setIsLoading(false))
   }, [])
 
   const handleRedetect = async () => {
-    setIsRedetecting(true)
-    setRedetectResult(null)
+    setIsRedetecting(true); setRedetectResult(null)
     try {
-      const result = await documentsService.redetectConnections()
-      setRedetectResult(`${result.processed} docs scanned · ${result.total_connections} connections`)
+      const r = await documentsService.redetectConnections()
+      setRedetectResult(`${r.processed} docs · ${r.total_connections} connections`)
       loadData()
-    } catch {
-      setRedetectResult('Scan failed')
-    } finally {
-      setIsRedetecting(false)
-    }
+    } catch { setRedetectResult('Scan failed') }
+    finally { setIsRedetecting(false) }
   }
 
   useEffect(() => { loadData() }, [loadData])
 
   useEffect(() => {
     if (!containerRef.current) return
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect
+    const ro = new ResizeObserver((e) => {
+      const { width, height } = e[0].contentRect
       setSvgSize({ w: width, h: height })
     })
     ro.observe(containerRef.current)
     return () => ro.disconnect()
   }, [])
 
-  // ── Simulation setup ──────────────────────────────────────────────────────
+  // ── Simulation ────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (graphData.nodes.length === 0) return
@@ -160,20 +159,33 @@ export function DocumentGraph() {
       connCount.set(e.source, (connCount.get(e.source) ?? 0) + 1)
       connCount.set(e.target, (connCount.get(e.target) ?? 0) + 1)
     }
+    const threshold = computeHubThreshold(connCount)
+    const isHub = (id: number) => (connCount.get(id) ?? 0) >= threshold
 
-    // Circular initial layout for better starting positions
-    const n = graphData.nodes.length
-    const radius = Math.max(180, n * 30)
-    simNodesRef.current = graphData.nodes.map((node, i) => {
-      const angle = (2 * Math.PI * i) / n
-      return {
-        ...node,
-        x: cx + radius * Math.cos(angle),
-        y: cy + radius * Math.sin(angle),
-        vx: 0, vy: 0,
-        connectionCount: connCount.get(node.id) ?? 0,
-      }
-    })
+    const hubs  = graphData.nodes.filter((n) => isHub(n.id))
+    const leafs = graphData.nodes.filter((n) => !isHub(n.id))
+
+    // Initial positions: hubs on left, leafs on right, arranged vertically
+    const place = (nodes: DocGraphNode[], baseX: number) =>
+      nodes.map((n, i) => {
+        const total = nodes.length
+        const spacing = Math.min(120, (h - 120) / Math.max(total, 1))
+        const startY  = cy - (spacing * (total - 1)) / 2
+        const jitter  = (Math.random() - 0.5) * 60
+        return {
+          ...n,
+          x: baseX + jitter,
+          y: startY + i * spacing,
+          vx: 0, vy: 0,
+          connectionCount: connCount.get(n.id) ?? 0,
+          isHub: isHub(n.id),
+        } satisfies SimNode
+      })
+
+    simNodesRef.current = [
+      ...place(hubs,  cx * 0.38),
+      ...place(leafs, cx * 1.62),
+    ]
     simEdgesRef.current = graphData.edges.map((e) => ({
       sourceId: e.source, targetId: e.target, weight: e.weight,
     }))
@@ -190,49 +202,44 @@ export function DocumentGraph() {
     return () => cancelAnimationFrame(rafRef.current!)
   }, [graphData, svgSize])
 
-  // ── Derived selection ─────────────────────────────────────────────────────
+  // ── Selection ─────────────────────────────────────────────────────────────
 
-  const outgoingEdges = useMemo(
+  const outEdges = useMemo(
     () => selectedId === null ? [] : graphData.edges.filter((e) => e.source === selectedId),
     [selectedId, graphData],
   )
-  const incomingEdges = useMemo(
+  const inEdges = useMemo(
     () => selectedId === null ? [] : graphData.edges.filter((e) => e.target === selectedId),
     [selectedId, graphData],
   )
-  const outIds = useMemo(() => new Set(outgoingEdges.map((e) => e.target)), [outgoingEdges])
-  const inIds  = useMemo(() => new Set(incomingEdges.map((e) => e.source)), [incomingEdges])
-  const selectedNode = useMemo(() => graphData.nodes.find((n) => n.id === selectedId) ?? null, [selectedId, graphData])
+  const outIds = useMemo(() => new Set(outEdges.map((e) => e.target)), [outEdges])
+  const inIds  = useMemo(() => new Set(inEdges.map((e) => e.source)), [inEdges])
+  const selNode = useMemo(() => graphData.nodes.find((n) => n.id === selectedId) ?? null, [selectedId, graphData])
 
-  function nodeColor(id: number) {
-    if (id === selectedId)   return C_SELECTED
-    if (outIds.has(id))      return C_OUT
-    if (inIds.has(id))       return C_IN
-    return C_DEFAULT
+  function getNodeColor(n: SimNode) {
+    if (n.id === selectedId) return C_SELECTED
+    if (outIds.has(n.id))   return C_OUT
+    if (inIds.has(n.id))    return C_IN
+    return n.isHub ? C_HUB : C_LEAF
   }
 
   // ── Fit to view ───────────────────────────────────────────────────────────
 
   const fitToView = useCallback(() => {
     const nodes = simNodesRef.current
-    if (nodes.length === 0) return
-    const pad = 80
+    if (!nodes.length) return
+    const pad = 100
     const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y)
     const minX = Math.min(...xs), maxX = Math.max(...xs)
     const minY = Math.min(...ys), maxY = Math.max(...ys)
-    const gw = maxX - minX || 1, gh = maxY - minY || 1
     const { w, h } = svgSize
-    const k = Math.min((w - pad * 2) / gw, (h - pad * 2) / gh, 2)
-    setTransform({
-      k,
-      x: (w - (minX + maxX) * k) / 2,
-      y: (h - (minY + maxY) * k) / 2,
-    })
+    const k = Math.min((w - pad * 2) / (maxX - minX || 1), (h - pad * 2) / (maxY - minY || 1), 2)
+    setTransform({ k, x: (w - (minX + maxX) * k) / 2, y: (h - (minY + maxY) * k) / 2 })
   }, [svgSize])
 
   // ── Mouse handlers ────────────────────────────────────────────────────────
 
-  const handleNodeMouseDown = (e: React.MouseEvent, id: number) => {
+  const handleNodeDown = (e: React.MouseEvent, id: number) => {
     e.stopPropagation()
     const node = simNodesRef.current.find((n) => n.id === id)
     if (!node) return
@@ -244,11 +251,7 @@ export function DocumentGraph() {
     if (nodeDragRef.current) {
       const d = nodeDragRef.current
       const node = simNodesRef.current.find((n) => n.id === d.id)
-      if (node) {
-        node.x = d.ox + (e.clientX - d.mx) / transform.k
-        node.y = d.oy + (e.clientY - d.my) / transform.k
-        setTick((t) => t + 1)
-      }
+      if (node) { node.x = d.ox + (e.clientX - d.mx) / transform.k; node.y = d.oy + (e.clientY - d.my) / transform.k; setTick((t) => t + 1) }
     } else if (panDragRef.current) {
       const d = panDragRef.current
       setTransform((p) => ({ ...p, x: d.tx + (e.clientX - d.mx), y: d.ty + (e.clientY - d.my) }))
@@ -264,7 +267,7 @@ export function DocumentGraph() {
     panDragRef.current = null
   }
 
-  const handleBgMouseDown = (e: React.MouseEvent) => {
+  const handleBgDown = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget || (e.target as SVGElement).tagName === 'rect') {
       setSelectedId(null)
       panDragRef.current = { mx: e.clientX, my: e.clientY, tx: transform.x, ty: transform.y }
@@ -273,23 +276,20 @@ export function DocumentGraph() {
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault()
-    const factor = e.deltaY > 0 ? 0.88 : 1.14
-    // Zoom toward cursor position
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const mx = e.clientX - rect.left
-    const my = e.clientY - rect.top
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top
+    const factor = e.deltaY > 0 ? 0.88 : 1.14
     setTransform((p) => {
-      const newK = Math.max(0.15, Math.min(6, p.k * factor))
-      return {
-        k: newK,
-        x: mx - (mx - p.x) * (newK / p.k),
-        y: my - (my - p.y) * (newK / p.k),
-      }
+      const k = Math.max(0.1, Math.min(6, p.k * factor))
+      return { k, x: mx - (mx - p.x) * (k / p.k), y: my - (my - p.y) * (k / p.k) }
     })
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const visibleNodes = useMemo(() => simNodesRef.current, [tick])
+  const visNodes = useMemo(() => simNodesRef.current, [tick])
+
+  const hubCount  = visNodes.filter((n) => n.isHub).length
+  const leafCount = visNodes.filter((n) => !n.isHub).length
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -304,7 +304,7 @@ export function DocumentGraph() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
         </button>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1">
           <h1 className="text-base font-semibold">Document Connection Graph</h1>
           <p className="text-xs text-dark-muted">
             {graphData.nodes.length} documents · {graphData.edges.length} connections
@@ -327,16 +327,37 @@ export function DocumentGraph() {
 
       <div className="flex flex-1 min-h-0">
 
-        {/* Left panel */}
-        <div className="w-48 flex-shrink-0 border-r border-dark-chat bg-dark-sidebar flex flex-col p-3 gap-5">
+        {/* Left sidebar */}
+        <div className="w-52 flex-shrink-0 border-r border-dark-chat bg-dark-sidebar flex flex-col p-3 gap-5">
+          {/* Zone counts */}
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2">Layout</p>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-dark-chat/50">
+              <span className="w-3 h-3 rounded-full bg-indigo-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-dark-text font-medium">Hub documents</p>
+                <p className="text-[10px] text-dark-muted">Highly connected · left side</p>
+              </div>
+              <span className="text-xs font-bold text-indigo-400">{hubCount}</span>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-dark-chat/50">
+              <span className="w-3 h-3 rounded-full bg-sky-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-dark-text font-medium">Source documents</p>
+                <p className="text-[10px] text-dark-muted">Fewer connections · right side</p>
+              </div>
+              <span className="text-xs font-bold text-sky-400">{leafCount}</span>
+            </div>
+          </div>
+
+          {/* Legend */}
           <div>
-            <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2.5">Legend</p>
-            <div className="space-y-2">
+            <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2">Selection</p>
+            <div className="space-y-1.5">
               {[
-                { color: C_DEFAULT,  label: 'Document' },
                 { color: C_SELECTED, label: 'Selected' },
-                { color: C_OUT,      label: 'Referenced' },
-                { color: C_IN,       label: 'References' },
+                { color: C_OUT,      label: 'Referenced by it' },
+                { color: C_IN,       label: 'References it' },
               ].map(({ color, label }) => (
                 <div key={label} className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
@@ -346,20 +367,16 @@ export function DocumentGraph() {
             </div>
           </div>
 
-          <div className="border-t border-dark-chat pt-3 text-xs text-dark-muted space-y-1.5">
-            <p>Scroll to zoom · Drag background to pan · Drag nodes to reposition · Click to select</p>
+          <div className="border-t border-dark-chat pt-3 text-[11px] text-dark-muted leading-relaxed">
+            Scroll to zoom · Drag canvas to pan · Drag nodes to reposition
           </div>
 
           <div className="mt-auto space-y-1.5">
             <div className="flex gap-1.5">
               <button onClick={() => setTransform((p) => ({ ...p, k: Math.min(6, p.k * 1.25) }))}
-                className="flex-1 py-1.5 text-xs bg-dark-chat hover:bg-dark-hover rounded text-dark-muted hover:text-dark-text">
-                + Zoom
-              </button>
-              <button onClick={() => setTransform((p) => ({ ...p, k: Math.max(0.15, p.k * 0.8) }))}
-                className="flex-1 py-1.5 text-xs bg-dark-chat hover:bg-dark-hover rounded text-dark-muted hover:text-dark-text">
-                − Zoom
-              </button>
+                className="flex-1 py-1.5 text-xs bg-dark-chat hover:bg-dark-hover rounded text-dark-muted hover:text-dark-text">+ Zoom</button>
+              <button onClick={() => setTransform((p) => ({ ...p, k: Math.max(0.1, p.k * 0.8) }))}
+                className="flex-1 py-1.5 text-xs bg-dark-chat hover:bg-dark-hover rounded text-dark-muted hover:text-dark-text">− Zoom</button>
             </div>
             <button onClick={fitToView}
               className="w-full py-1.5 text-xs bg-dark-chat hover:bg-dark-hover rounded text-dark-muted hover:text-dark-text">
@@ -374,100 +391,114 @@ export function DocumentGraph() {
 
         {/* SVG canvas */}
         <div ref={containerRef} className="flex-1 relative overflow-hidden"
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}>
+          onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
 
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <svg className="w-6 h-6 animate-spin text-dark-muted" fill="none" viewBox="0 0 24 24">
+              <svg className="w-7 h-7 animate-spin text-dark-muted" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
               </svg>
             </div>
           )}
+
           {!isLoading && graphData.nodes.length === 0 && (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
               <p className="text-dark-muted font-medium">No connections found</p>
               <p className="text-sm text-dark-muted mt-2 max-w-sm">
-                Upload documents that reference other document filenames. Connections are detected automatically.
+                Upload documents that reference other document filenames.
               </p>
             </div>
           )}
 
-          <svg width="100%" height="100%"
-            onWheel={handleWheel}
+          <svg width="100%" height="100%" onWheel={handleWheel}
             style={{ cursor: panDragRef.current ? 'grabbing' : 'grab' }}>
             <defs>
               <marker id="arr-def" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                <path d="M0,0 L0,7 L10,3.5 z" fill={ARROW_DEFAULT} />
+                <path d="M0,0 L0,7 L10,3.5 z" fill="rgba(99,102,241,0.6)" />
               </marker>
               <marker id="arr-out" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                <path d="M0,0 L0,7 L10,3.5 z" fill={ARROW_OUT} />
+                <path d="M0,0 L0,7 L10,3.5 z" fill="#c084fc" />
               </marker>
               <marker id="arr-in" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-                <path d="M0,0 L0,7 L10,3.5 z" fill={ARROW_IN} />
+                <path d="M0,0 L0,7 L10,3.5 z" fill="#34d399" />
               </marker>
-              <filter id="glow">
-                <feGaussianBlur stdDeviation="3" result="blur" />
+              <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4" result="blur" />
                 <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
               </filter>
+              <filter id="glow-sm" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="2" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+              {/* Zone gradients */}
+              <linearGradient id="grad-hub" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#818cf8" stopOpacity="0.07" />
+                <stop offset="100%" stopColor="#818cf8" stopOpacity="0" />
+              </linearGradient>
+              <linearGradient id="grad-leaf" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#38bdf8" stopOpacity="0" />
+                <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.07" />
+              </linearGradient>
             </defs>
 
-            <rect width="100%" height="100%" fill="transparent" onMouseDown={handleBgMouseDown} />
+            {/* Zone backgrounds */}
+            <rect x="0" y="0" width="50%" height="100%" fill="url(#grad-hub)" />
+            <rect x="50%" y="0" width="50%" height="100%" fill="url(#grad-leaf)" />
+            {/* Center divider */}
+            <line x1="50%" y1="0" x2="50%" y2="100%"
+              stroke="rgba(255,255,255,0.04)" strokeWidth="1" strokeDasharray="6 6" />
+            {/* Zone labels */}
+            <text x="4%" y="28" fontSize="11" fill="rgba(129,140,248,0.55)" fontWeight="600" letterSpacing="0.08em">
+              HUB DOCUMENTS
+            </text>
+            <text x="96%" y="28" fontSize="11" fill="rgba(56,189,248,0.55)" fontWeight="600" letterSpacing="0.08em" textAnchor="end">
+              SOURCE DOCUMENTS
+            </text>
+
+            <rect width="100%" height="100%" fill="transparent" onMouseDown={handleBgDown} />
 
             <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
 
               {/* Edges */}
               {simEdgesRef.current.map((e, i) => {
-                const src = visibleNodes.find((n) => n.id === e.sourceId)
-                const tgt = visibleNodes.find((n) => n.id === e.targetId)
+                const src = visNodes.find((n) => n.id === e.sourceId)
+                const tgt = visNodes.find((n) => n.id === e.targetId)
                 if (!src || !tgt) return null
 
-                const isOut = selectedId === e.sourceId || hoveredId === e.sourceId
-                const isIn  = selectedId === e.targetId || hoveredId === e.targetId
-                const hiOut = isOut && !isIn
-                const hiIn  = isIn && !isOut
-                const hi    = isOut || isIn
+                const hiOut = (selectedId === e.sourceId || hoveredId === e.sourceId) && selectedId !== e.targetId
+                const hiIn  = (selectedId === e.targetId || hoveredId === e.targetId) && selectedId !== e.sourceId
+                const hi    = hiOut || hiIn
+                const isCross = src.isHub !== tgt.isHub
 
-                const strokeColor  = hiOut ? EDGE_OUT : hiIn ? EDGE_IN : EDGE_DEFAULT
-                const arrowMarker  = hiOut ? 'url(#arr-out)' : hiIn ? 'url(#arr-in)' : 'url(#arr-def)'
-                const strokeW      = hi ? Math.max(2, e.weight * 0.6) : 1.2
-                const strokeOp     = hi ? 1 : 0.5
+                const stroke  = hiOut ? 'rgba(192,132,252,0.85)' : hiIn ? 'rgba(52,211,153,0.85)' : isCross ? 'rgba(148,163,184,0.28)' : 'rgba(99,102,241,0.22)'
+                const strokeW = hi ? Math.max(2, e.weight * 0.7) : isCross ? 1.5 : 1
+                const marker  = hiOut ? 'url(#arr-out)' : hiIn ? 'url(#arr-in)' : 'url(#arr-def)'
 
-                // Curved path
                 const dx = tgt.x - src.x, dy = tgt.y - src.y
                 const len = Math.sqrt(dx * dx + dy * dy) || 1
-                const tr = nodeRadius(tgt as SimNode)
-                // shorten end point to not overlap node
-                const ex = tgt.x - (dx / len) * (tr + 10)
-                const ey = tgt.y - (dy / len) * (tr + 10)
-                const mx = (src.x + ex) / 2
-                const my = (src.y + ey) / 2
-                const perp = Math.min(len * 0.18, 35)
-                const cpx  = mx - (dy / len) * perp
-                const cpy  = my + (dx / len) * perp
-                const midX = (src.x + 2 * cpx + ex) / 4
-                const midY = (src.y + 2 * cpy + ey) / 4
+                const tr = nodeRadius(tgt)
+                const ex = tgt.x - (dx / len) * (tr + 9)
+                const ey = tgt.y - (dy / len) * (tr + 9)
+                const mx = (src.x + ex) / 2, my = (src.y + ey) / 2
+                const perp = isCross ? 0 : Math.min(len * 0.15, 30)
+                const cpx  = mx - (dy / len) * perp, cpy = my + (dx / len) * perp
+                const midX = (src.x + 2 * cpx + ex) / 4, midY = (src.y + 2 * cpy + ey) / 4
 
                 return (
                   <g key={i}>
-                    <path
-                      d={`M${src.x},${src.y} Q${cpx},${cpy} ${ex},${ey}`}
-                      fill="none"
-                      stroke={strokeColor}
-                      strokeWidth={strokeW}
-                      strokeOpacity={strokeOp}
-                      markerEnd={arrowMarker}
-                      filter={hi ? 'url(#glow)' : undefined}
+                    <path d={`M${src.x},${src.y} Q${cpx},${cpy} ${ex},${ey}`}
+                      fill="none" stroke={stroke} strokeWidth={strokeW}
+                      markerEnd={marker}
+                      filter={hi ? 'url(#glow-sm)' : undefined}
                     />
                     {hi && e.weight > 1 && (
                       <>
                         <rect x={midX - 11} y={midY - 8} width={22} height={14} rx={4}
-                          fill="#1c1d28" opacity={0.85} />
+                          fill="#0a0b10" opacity={0.9} />
                         <text x={midX} y={midY + 1} textAnchor="middle" dominantBaseline="middle"
-                          fontSize="9" fill={hiOut ? ARROW_OUT : ARROW_IN}
-                          className="pointer-events-none select-none font-mono">
+                          fontSize="9" fill={hiOut ? '#c084fc' : '#34d399'}
+                          className="pointer-events-none select-none">
                           ×{e.weight}
                         </text>
                       </>
@@ -477,61 +508,59 @@ export function DocumentGraph() {
               })}
 
               {/* Nodes */}
-              {visibleNodes.map((node) => {
-                const r = nodeRadius(node)
-                const color = nodeColor(node.id)
-                const isSel = selectedId === node.id
-                const isHov = hoveredId === node.id
-                const label = node.label.length > 26 ? node.label.slice(0, 26) + '…' : node.label
-                const labelW = label.length * 6.2 + 12
+              {visNodes.map((node) => {
+                const r     = nodeRadius(node)
+                const color = getNodeColor(node)
+                const isSel = node.id === selectedId
+                const isHov = node.id === hoveredId
+                const label = node.label.length > 24 ? node.label.slice(0, 24) + '…' : node.label
+                const labelW = label.length * 6.2 + 14
 
                 return (
                   <g key={node.id}
                     transform={`translate(${node.x},${node.y})`}
                     style={{ cursor: 'pointer' }}
-                    onClick={(e) => { e.stopPropagation(); setSelectedId(selectedId === node.id ? null : node.id) }}
-                    onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                    onClick={(e) => { e.stopPropagation(); setSelectedId(node.id === selectedId ? null : node.id) }}
+                    onMouseDown={(e) => handleNodeDown(e, node.id)}
                     onMouseEnter={(e) => {
                       setHoveredId(node.id)
-                      const rect = containerRef.current!.getBoundingClientRect()
-                      setTooltipNode({ id: node.id, x: e.clientX - rect.left, y: e.clientY - rect.top })
+                      if (node.label.length > 24) {
+                        const rect = containerRef.current!.getBoundingClientRect()
+                        setTooltipPos({ x: e.clientX - rect.left, y: e.clientY - rect.top, label: node.label })
+                      }
                     }}
-                    onMouseLeave={() => { setHoveredId(null); setTooltipNode(null) }}
+                    onMouseLeave={() => { setHoveredId(null); setTooltipPos(null) }}
                   >
-                    {/* Glow ring on select/hover */}
+                    {/* Outer glow ring */}
                     {(isSel || isHov) && (
-                      <circle r={r + 8} fill={color} fillOpacity={0.18} />
+                      <circle r={r + 9} fill={color} fillOpacity={0.15}
+                        filter={isSel ? 'url(#glow)' : undefined} />
                     )}
-                    {/* Node circle */}
-                    <circle r={r}
-                      fill={color}
-                      fillOpacity={isSel ? 1 : 0.85}
-                      stroke={isSel ? '#fff' : color}
-                      strokeWidth={isSel ? 2.5 : 1}
-                      strokeOpacity={isSel ? 1 : 0.4}
+                    {/* Hub ring (extra visual weight for hub nodes) */}
+                    {node.isHub && (
+                      <circle r={r + 3} fill="none" stroke={color} strokeWidth="1" strokeOpacity="0.3" />
+                    )}
+                    {/* Node fill */}
+                    <circle r={r} fill={color} fillOpacity={isSel ? 1 : 0.82}
+                      stroke={isSel ? '#fff' : color} strokeWidth={isSel ? 2.5 : 1} strokeOpacity={isSel ? 1 : 0.5}
                       filter={isSel ? 'url(#glow)' : undefined}
                     />
-                    {/* Connection count badge */}
+                    {/* Connection count inside node */}
                     {node.connectionCount > 0 && (
-                      <text y={r * 0.4} textAnchor="middle" dominantBaseline="middle"
-                        fontSize={r > 18 ? '10' : '8'} fill="rgba(255,255,255,0.9)"
+                      <text y={r * 0.35} textAnchor="middle" dominantBaseline="middle"
+                        fontSize={r > 20 ? '11' : '9'} fill="rgba(255,255,255,0.95)"
                         fontWeight="700" className="pointer-events-none select-none">
                         {node.connectionCount}
                       </text>
                     )}
-                    {/* Label with background pill */}
-                    <rect
-                      x={-labelW / 2} y={r + 6}
-                      width={labelW} height={16} rx={4}
-                      fill="#0a0b10" fillOpacity={0.82}
-                    />
-                    <text
-                      y={r + 15} textAnchor="middle" dominantBaseline="middle"
+                    {/* Label pill */}
+                    <rect x={-labelW / 2} y={r + 5} width={labelW} height={17} rx={4}
+                      fill="#0a0b10" fillOpacity={0.85} />
+                    <text y={r + 14} textAnchor="middle" dominantBaseline="middle"
                       fontSize="11"
                       fill={isSel ? '#fff' : isHov ? '#e8eaf2' : '#8082a0'}
                       fontWeight={isSel ? '600' : '400'}
-                      className="pointer-events-none select-none"
-                    >
+                      className="pointer-events-none select-none">
                       {label}
                     </text>
                   </g>
@@ -540,49 +569,48 @@ export function DocumentGraph() {
             </g>
           </svg>
 
-          {/* Hover tooltip for full filename */}
-          {tooltipNode && (() => {
-            const full = graphData.nodes.find((n) => n.id === tooltipNode.id)?.label ?? ''
-            if (full.length <= 26) return null
-            return (
-              <div
-                className="absolute z-20 pointer-events-none px-2.5 py-1.5 rounded-lg text-xs bg-dark-sidebar border border-dark-chat text-dark-text shadow-xl max-w-xs break-all"
-                style={{ left: tooltipNode.x + 12, top: tooltipNode.y - 30 }}
-              >
-                {full}
-              </div>
-            )
-          })()}
+          {/* Tooltip */}
+          {tooltipPos && (
+            <div className="absolute z-20 pointer-events-none px-2.5 py-1.5 rounded-lg text-xs bg-dark-sidebar border border-dark-chat text-dark-text shadow-xl max-w-xs break-all"
+              style={{ left: tooltipPos.x + 14, top: tooltipPos.y - 32 }}>
+              {tooltipPos.label}
+            </div>
+          )}
         </div>
 
-        {/* Right panel — details */}
+        {/* Right panel */}
         <div className="w-64 flex-shrink-0 border-l border-dark-chat bg-dark-sidebar flex flex-col overflow-y-auto">
-          {!selectedNode ? (
+          {!selNode ? (
             <div className="flex items-center justify-center h-full text-center p-6">
               <p className="text-sm text-dark-muted">Click a node to see its connections</p>
             </div>
           ) : (
             <div className="p-4 space-y-4">
               <div>
-                <h2 className="text-sm font-semibold text-dark-text leading-tight break-words">
-                  {selectedNode.label}
-                </h2>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+                    style={{
+                      background: visNodes.find((n) => n.id === selNode.id)?.isHub ? 'rgba(129,140,248,0.15)' : 'rgba(56,189,248,0.12)',
+                      color:      visNodes.find((n) => n.id === selNode.id)?.isHub ? '#818cf8' : '#38bdf8',
+                    }}>
+                    {visNodes.find((n) => n.id === selNode.id)?.isHub ? 'Hub' : 'Source'}
+                  </span>
+                </div>
+                <h2 className="text-sm font-semibold text-dark-text leading-tight break-words">{selNode.label}</h2>
                 <p className="text-xs text-dark-muted mt-1">
-                  {outgoingEdges.length} references out · {incomingEdges.length} referenced by
+                  {outEdges.length} outgoing · {inEdges.length} incoming
                 </p>
               </div>
 
-              {outgoingEdges.length > 0 && (
+              {outEdges.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2">
-                    References
-                  </p>
+                  <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2">References →</p>
                   <div className="space-y-1">
-                    {outgoingEdges.map((e, i) => {
+                    {outEdges.map((e, i) => {
                       const tgt = graphData.nodes.find((n) => n.id === e.target)
                       return (
                         <div key={i} className="flex items-start gap-2 text-xs">
-                          <span className="text-violet-400 font-mono flex-shrink-0 mt-0.5">→</span>
+                          <span className="text-purple-400 font-mono flex-shrink-0 mt-0.5">→</span>
                           <button className="text-left flex-1 text-dark-text hover:text-white break-words"
                             onClick={() => setSelectedId(e.target)}>
                             {tgt?.label ?? `Doc #${e.target}`}
@@ -595,13 +623,11 @@ export function DocumentGraph() {
                 </div>
               )}
 
-              {incomingEdges.length > 0 && (
+              {inEdges.length > 0 && (
                 <div>
-                  <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2">
-                    Referenced By
-                  </p>
+                  <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider mb-2">Referenced by ←</p>
                   <div className="space-y-1">
-                    {incomingEdges.map((e, i) => {
+                    {inEdges.map((e, i) => {
                       const src = graphData.nodes.find((n) => n.id === e.source)
                       return (
                         <div key={i} className="flex items-start gap-2 text-xs">
@@ -609,7 +635,7 @@ export function DocumentGraph() {
                             onClick={() => setSelectedId(e.source)}>
                             {src?.label ?? `Doc #${e.source}`}
                           </button>
-                          <span className="text-emerald-400 font-mono flex-shrink-0 mt-0.5">→</span>
+                          <span className="text-emerald-400 font-mono flex-shrink-0 mt-0.5">←</span>
                           {e.weight > 1 && <span className="text-dark-muted flex-shrink-0">×{e.weight}</span>}
                         </div>
                       )
@@ -618,7 +644,7 @@ export function DocumentGraph() {
                 </div>
               )}
 
-              {outgoingEdges.length === 0 && incomingEdges.length === 0 && (
+              {outEdges.length === 0 && inEdges.length === 0 && (
                 <p className="text-xs text-dark-muted">No connections for this document.</p>
               )}
             </div>
