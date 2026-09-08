@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0d0f1e"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="12" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#7c6ef8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+
+  <!-- Stylised lightning-bolt "A" -->
+  <!-- Left stroke of A -->
+  <path d="M14 52 L28 12 L32 22 L22 52 Z" fill="url(#mark)" opacity="0.95"/>
+  <!-- Right stroke of A -->
+  <path d="M50 52 L36 12 L32 22 L42 52 Z" fill="url(#mark)" opacity="0.95"/>
+  <!-- Crossbar -->
+  <rect x="22" y="33" width="20" height="5" rx="2.5" fill="url(#mark)"/>
+
+  <!-- Subtle top glow dot -->
+  <circle cx="32" cy="12" r="3" fill="#c4b5fd" opacity="0.8"/>
+</svg>
