@@ -78,12 +78,28 @@ def _title_ngrams(title: str, window: int = 5) -> list[str]:
 class RAGService:
     """Structure-aware RAG: ingest, embed, and retrieve documents."""
 
+    _trgm_available: bool | None = None  # cached after first check
+
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self.embedding = EmbeddingService()
         self.docling = DoclingService()
         self.summarizer = SummarizationService()
         self.top_k = settings.RAG_TOP_K
+
+    async def _check_trgm(self) -> bool:
+        if RAGService._trgm_available is None:
+            try:
+                from sqlalchemy import text as sa_text
+                await self.db.execute(
+                    sa_text("SELECT word_similarity('test', 'test')")
+                )
+                RAGService._trgm_available = True
+                log("pg_trgm available — hybrid scoring enabled")
+            except Exception:
+                RAGService._trgm_available = False
+                log("pg_trgm not available — run migration 014, using pure vector search")
+        return RAGService._trgm_available
 
     # ==================================================================
     # Ingestion
@@ -359,6 +375,7 @@ class RAGService:
         # Extract keywords for trigram pre-filtering and hybrid scoring
         keywords = _extract_keywords(query)
         log(f"Keywords: {keywords[:8]}")
+        has_trgm = await self._check_trgm()
 
         # ------------------------------------------------------------------
         # Step 1: Find relevant sections via summary embedding
@@ -408,7 +425,7 @@ class RAGService:
         # Build trigram score expression (DB-computed, uses GIN index).
         # word_similarity(keyword, text) is asymmetric: measures how well
         # the keyword appears as a word within the chunk text.
-        if keywords:
+        if has_trgm and keywords:
             trgm_expr = func.greatest(*[
                 func.coalesce(
                     func.word_similarity(kw, DocumentChunk.chunk_text),
@@ -444,7 +461,7 @@ class RAGService:
                 func.word_similarity(kw, DocumentChunk.chunk_text) > 0.1
                 for kw in keywords[:6]
             ])
-            if keywords else None
+            if (has_trgm and keywords) else None
         )
 
         # When a full group was expanded fetch enough to cover all sections
@@ -454,22 +471,20 @@ class RAGService:
             else top_k * 4
         )
 
-        async def _run_chunk_q(base_q, section_ids, limit):
+        async def _run_chunk_q(base_q, section_ids, limit, apply_trgm=True):
             """Run chunk query, optionally narrowed to section_ids."""
             q = base_q
             if section_ids:
                 q = q.where(
                     DocumentChunk.section_id.in_(section_ids)
                 )
-            if trgm_filter is not None:
+            if apply_trgm and trgm_filter is not None:
                 q = q.where(trgm_filter)
             return (
                 await self.db.execute(q.order_by("distance").limit(limit))
             ).all()
 
-        rows = await _run_chunk_q(
-            chunk_q, relevant_section_ids, fetch_k
-        )
+        rows = await _run_chunk_q(chunk_q, relevant_section_ids, fetch_k)
 
         # Fallback 1: drop trigram filter if not enough results
         if trgm_filter is not None and len(rows) < top_k:
@@ -478,9 +493,7 @@ class RAGService:
                 "— retrying without it"
             )
             rows = await _run_chunk_q(
-                chunk_q.filter(True),   # reset trgm_filter
-                relevant_section_ids,
-                fetch_k,
+                chunk_q, relevant_section_ids, fetch_k, apply_trgm=False
             )
 
         # Fallback 2: global search if sections gave too few results
