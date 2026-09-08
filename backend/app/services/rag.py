@@ -97,6 +97,8 @@ class RAGService:
                 RAGService._trgm_available = True
                 log("pg_trgm available — hybrid scoring enabled")
             except Exception:
+                # Roll back the failed transaction so the session stays usable
+                await self.db.rollback()
                 RAGService._trgm_available = False
                 log("pg_trgm not available — run migration 014, using pure vector search")
         return RAGService._trgm_available
