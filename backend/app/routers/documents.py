@@ -73,6 +73,75 @@ async def list_documents(
     }
 
 
+@router.get("/search")
+async def search_documents(
+    query: str,
+    top_k: int = 5,
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search documents using the section-first hybrid pipeline."""
+    if not query or len(query) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Query must be at least 3 characters",
+        )
+
+    rag = RAGService(db)
+    results = await rag.search(
+        query=query,
+        user_id=user.id if user else None,
+        top_k=min(top_k, 20),
+    )
+    return {"query": query, "results": results, "count": len(results)}
+
+
+@router.get("/connections")
+async def get_document_connections(
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return all explicit document-to-document connections as a graph
+    (nodes + edges) for visualisation.
+    """
+    doc_rows = (await db.execute(
+        select(Attachment.id, Attachment.original_filename)
+        .where(
+            Attachment.is_embedded.is_(True),
+            Attachment.processing_status == "done",
+        )
+    )).all()
+
+    nodes = [
+        {"id": doc_id, "label": filename}
+        for doc_id, filename in doc_rows
+    ]
+
+    doc_ids = {r[0] for r in doc_rows}
+    conn_rows = (await db.execute(
+        select(
+            DocumentConnection.source_id,
+            DocumentConnection.target_id,
+            DocumentConnection.mention_count,
+        ).where(
+            DocumentConnection.source_id.in_(doc_ids),
+            DocumentConnection.target_id.in_(doc_ids),
+        )
+    )).all()
+
+    edges = [
+        {
+            "source": source_id,
+            "target": target_id,
+            "weight": mention_count,
+        }
+        for source_id, target_id, mention_count in conn_rows
+    ]
+
+    return {"nodes": nodes, "edges": edges}
+
+
 @router.post("/reembed-sections")
 async def reembed_sections(
     attachment_id: Optional[int] = None,
@@ -598,29 +667,6 @@ async def change_document_visibility(
     return {"id": attachment.id, "is_company_doc": attachment.is_company_doc}
 
 
-@router.get("/search")
-async def search_documents(
-    query: str,
-    top_k: int = 5,
-    user: User | None = Depends(get_optional_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Search documents using the section-first hybrid pipeline."""
-    if not query or len(query) < 3:
-        raise HTTPException(
-            status_code=400,
-            detail="Query must be at least 3 characters",
-        )
-
-    rag = RAGService(db)
-    results = await rag.search(
-        query=query,
-        user_id=user.id if user else None,
-        top_k=min(top_k, 20),
-    )
-    return {"query": query, "results": results, "count": len(results)}
-
-
 @router.post("/redetect-connections")
 async def redetect_connections(
     user: User = Depends(get_current_user),
@@ -679,49 +725,3 @@ async def redetect_connections(
     }
 
 
-@router.get("/connections")
-async def get_document_connections(
-    user: User | None = Depends(get_optional_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Return all explicit document-to-document connections as a graph
-    (nodes + edges) for visualisation.
-    """
-    # All embedded documents the user can see
-    doc_rows = (await db.execute(
-        select(Attachment.id, Attachment.original_filename)
-        .where(
-            Attachment.is_embedded.is_(True),
-            Attachment.processing_status == "done",
-        )
-    )).all()
-
-    nodes = [
-        {"id": doc_id, "label": filename}
-        for doc_id, filename in doc_rows
-    ]
-
-    # All connections between those documents
-    doc_ids = {r[0] for r in doc_rows}
-    conn_rows = (await db.execute(
-        select(
-            DocumentConnection.source_id,
-            DocumentConnection.target_id,
-            DocumentConnection.mention_count,
-        ).where(
-            DocumentConnection.source_id.in_(doc_ids),
-            DocumentConnection.target_id.in_(doc_ids),
-        )
-    )).all()
-
-    edges = [
-        {
-            "source": source_id,
-            "target": target_id,
-            "weight": mention_count,
-        }
-        for source_id, target_id, mention_count in conn_rows
-    ]
-
-    return {"nodes": nodes, "edges": edges}
