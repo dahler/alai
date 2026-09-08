@@ -420,13 +420,6 @@ function StreamingText({ content }: { content: string }) {
   )
 }
 
-function getFileType(filename: string): 'pdf' | 'image' | 'other' {
-  const ext = filename.split('.').pop()?.toLowerCase() || ''
-  if (ext === 'pdf') return 'pdf'
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) return 'image'
-  return 'other'
-}
-
 function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () => void }) {
   const [chunks, setChunks] = useState<DocumentChunk[]>([])
   const [loading, setLoading] = useState(true)
