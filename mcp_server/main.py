@@ -2,8 +2,8 @@
 ALAI MCP Server — exposes the RAG knowledge base as a Claude.ai tool.
 
 Transport: SSE (required for Claude.ai remote MCP integrations)
-  GET  /sse      — Claude.ai connects here
-  POST /messages — session message exchange
+  GET  /mcp/sse       — Claude.ai connects here
+  POST /mcp/messages/ — session message exchange
 
 Environment variables:
   RAG_URL     — REST endpoint (default: http://backend:8000/api/rag/query)
@@ -11,75 +11,37 @@ Environment variables:
   PORT        — listen port (default: 8001)
 """
 
+import asyncio
 import os
-import httpx
-import uvicorn
 
-from mcp.server import Server
-from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.routing import Route
+import httpx
+from mcp.server.mcpserver import MCPServer
 
 RAG_URL = os.getenv("RAG_URL", "http://backend:8000/api/rag/query")
 RAG_API_KEY = os.getenv("RAG_API_KEY", "")
 PORT = int(os.getenv("PORT", "8001"))
 
-# ── MCP server ────────────────────────────────────────────────────────────────
-
-mcp = Server("alai-rag")
+mcp = MCPServer("alai-rag")
 
 
-@mcp.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="search_documents",
-            description=(
-                "Search the company knowledge base for relevant information. "
-                "Returns ranked document chunks with source, section heading, "
-                "and page references. Use this whenever the user asks about "
-                "company policies, regulations, procedures, or internal docs."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural-language search query",
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": (
-                            "Number of results to return (1-20, default 5)"
-                        ),
-                        "default": 5,
-                    },
-                    "source_filter": {
-                        "type": "string",
-                        "description": (
-                            "Optional: restrict results to documents whose "
-                            "filename contains this string"
-                        ),
-                    },
-                },
-                "required": ["query"],
-            },
-        )
-    ]
+@mcp.tool()
+async def search_documents(
+    query: str,
+    top_k: int = 5,
+    source_filter: str | None = None,
+) -> str:
+    """Search the company knowledge base for relevant information.
 
+    Returns ranked document chunks with source, section heading, and page
+    references. Use this whenever the user asks about company policies,
+    regulations, procedures, or any topic covered in internal documents.
 
-@mcp.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name != "search_documents":
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
-
-    query = arguments.get("query", "")
-    top_k = min(int(arguments.get("top_k", 5)), 20)
-    source_filter = arguments.get("source_filter")
-
-    payload: dict = {"query": query, "top_k": top_k}
+    Args:
+        query: Natural-language search query.
+        top_k: Number of results to return (1-20, default 5).
+        source_filter: Optional filename substring to restrict results.
+    """
+    payload: dict = {"query": query, "top_k": min(top_k, 20)}
     if source_filter:
         payload["source_filter"] = source_filter
 
@@ -96,16 +58,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as e:
-        return [TextContent(
-            type="text",
-            text=f"RAG error {e.response.status_code}: {e.response.text}",
-        )]
+        return (
+            f"RAG error {e.response.status_code}: {e.response.text}"
+        )
     except Exception as e:
-        return [TextContent(type="text", text=f"RAG error: {e}")]
+        return f"RAG error: {e}"
 
     results = data.get("results", [])
     if not results:
-        return [TextContent(type="text", text="No relevant documents found.")]
+        return "No relevant documents found."
 
     parts: list[str] = []
     for r in results:
@@ -117,35 +78,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         header += f"  [relevance: {r.get('relevance_score', 0):.0%}]"
         parts.append(f"{header}\n{r['content']}")
 
-    return [TextContent(type="text", text="\n\n---\n\n".join(parts))]
+    return "\n\n---\n\n".join(parts)
 
-
-# ── SSE transport (required for Claude.ai) ───────────────────────────────────
-
-sse = SseServerTransport("/mcp/messages")
-
-
-async def handle_sse(request: Request) -> None:
-    async with sse.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
-        await mcp.run(
-            streams[0], streams[1], mcp.create_initialization_options()
-        )
-
-
-async def handle_messages(request: Request) -> None:
-    await sse.handle_post_message(
-        request.scope, request.receive, request._send
-    )
-
-
-app = Starlette(
-    routes=[
-        Route("/sse", endpoint=handle_sse),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    ]
-)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    asyncio.run(mcp.run_sse_async(
+        host="0.0.0.0",
+        port=PORT,
+        sse_path="/mcp/sse",
+        message_path="/mcp/messages/",
+    ))
