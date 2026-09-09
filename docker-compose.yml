@@ -42,6 +42,18 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # MCP Server — exposes RAG as a tool for Claude.ai remote MCP integration
+  mcp:
+    build: ./mcp_server
+    container_name: alai-mcp
+    environment:
+      RAG_URL: http://backend:8000/api/rag/query
+      RAG_API_KEY: ${RAG_API_KEY:-}
+    expose:
+      - "8001"
+    depends_on:
+      - backend
+
   # Nginx reverse proxy for the backend
   # Handles client_max_body_size and ensures CORS headers appear on all
   # responses (including nginx-level 413 errors from large uploads).
