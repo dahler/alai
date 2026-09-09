@@ -18,12 +18,20 @@ import os
 
 import httpx
 from mcp.server.mcpserver import MCPServer
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 RAG_URL = os.getenv("RAG_URL", "http://backend:8000/api/rag/query")
 RAG_API_KEY = os.getenv("RAG_API_KEY", "")
 PORT = int(os.getenv("PORT", "8001"))
 
 mcp = MCPServer("alai-rag")
+
+
+@mcp.custom_route("/", methods=["GET"])
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok", "service": "alai-mcp"})
 
 
 @mcp.tool()
