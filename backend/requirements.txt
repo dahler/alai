@@ -15,6 +15,7 @@ passlib[bcrypt]==1.7.4
 # HTTP Client
 httpx==0.26.0
 requests==2.31.0
+anthropic>=1.4.0
 
 # Validation
 pydantic[email]==2.6.1
