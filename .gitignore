@@ -74,3 +74,12 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.cover
+
+# Test / scratch scripts at project root
+test_*.py
+backend/test_*.txt
+backend/scripts/
+backend/generated_files/
+backend/template_files/
+backend/requirements_backup.txt
+docling_server/
