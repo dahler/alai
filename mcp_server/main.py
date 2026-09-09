@@ -2,8 +2,10 @@
 ALAI MCP Server — exposes the RAG knowledge base as a Claude.ai tool.
 
 Transport: SSE (required for Claude.ai remote MCP integrations)
-  GET  /mcp/sse       — Claude.ai connects here
-  POST /mcp/messages/ — session message exchange
+  GET  /sse       — Claude.ai connects here
+  POST /messages/ — session message exchange
+
+Public URL: https://mcp-alai.antaragpt.com/sse
 
 Environment variables:
   RAG_URL     — REST endpoint (default: http://backend:8000/api/rag/query)
@@ -85,6 +87,6 @@ if __name__ == "__main__":
     asyncio.run(mcp.run_sse_async(
         host="0.0.0.0",
         port=PORT,
-        sse_path="/mcp/sse",
-        message_path="/mcp/messages/",
+        sse_path="/sse",
+        message_path="/messages/",
     ))
