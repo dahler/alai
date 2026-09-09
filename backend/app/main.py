@@ -21,7 +21,7 @@ from app.models import (  # noqa: F401
 from app.routers import (
     auth_router, conversations_router, messages_router, uploads_router,
     documents_router, graph_router, agent_router, ai_router, files_router,
-    templates_router, folders_router,
+    templates_router, folders_router, rag_router,
 )
 from app.services.ai import AIService
 from app.services.embedding import EmbeddingService
@@ -130,6 +130,7 @@ app.include_router(ai_router, prefix="/api")
 app.include_router(files_router, prefix="/api")
 app.include_router(templates_router, prefix="/api")
 app.include_router(folders_router, prefix="/api")
+app.include_router(rag_router, prefix="/api")
 
 
 @app.get("/")

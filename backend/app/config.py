@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # e.g. DOCLING_SERVER_URL=http://192.168.1.50:7777
     DOCLING_SERVER_URL: str = ""
 
+    # RAG public API
+    # Set to a long random secret (e.g. openssl rand -hex 32).
+    # External callers (Claude tool-use, MCP, etc.) send it as
+    # "Authorization: Bearer <RAG_API_KEY>".  Empty string = endpoint disabled.
+    RAG_API_KEY: str = ""
+
     # File Upload
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB

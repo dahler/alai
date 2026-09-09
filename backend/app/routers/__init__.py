@@ -9,6 +9,7 @@ from app.router.endpoint import router as ai_router
 from app.routers.files import router as files_router
 from app.routers.templates import router as templates_router
 from app.routers.folders import router as folders_router
+from app.routers.rag import router as rag_router
 
 __all__ = [
     "auth_router",
@@ -22,4 +23,5 @@ __all__ = [
     "files_router",
     "templates_router",
     "folders_router",
+    "rag_router",
 ]

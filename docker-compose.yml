@@ -33,6 +33,7 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5}
       CORS_ORIGINS: '["http://localhost:3000", "http://localhost:80", "https://alai.antaragpt.com"]'
+      RAG_API_KEY: ${RAG_API_KEY:-}
     expose:
       - "8000"
     depends_on:
