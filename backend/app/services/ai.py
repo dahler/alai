@@ -81,6 +81,43 @@ class AIService:
         async for chunk in self.client.chat_stream(history, system_prompt=system_prompt, images=image_paths, model_override=model_override):
             yield chunk
 
+    async def rewrite_query(self, query: str, history: list[dict]) -> str:
+        """Rewrite a user query into better RAG search terms.
+
+        Uses the last 3 conversation turns for context so follow-up
+        questions ("what about step 3?") expand into full search phrases.
+        Returns the rewritten query string.
+        """
+        recent = history[-6:] if len(history) > 6 else history
+        context_lines = "\n".join(
+            f"{m['role'].capitalize()}: {m['content'][:200]}"
+            for m in recent
+            if m.get("content")
+        )
+        prompt = (
+            "You are a search query optimizer for a corporate document "
+            "knowledge base (Indonesian company policies, SOPs, regulations).\n\n"
+            "Given the conversation context and the user's latest question, "
+            "produce ONE improved search query that will retrieve the most "
+            "relevant document chunks.\n\n"
+            "Rules:\n"
+            "- Expand abbreviations (e.g. SOP → Standar Operasional Prosedur)\n"
+            "- Add formal synonyms and related terms\n"
+            "- Write in Bahasa Indonesia or English — whichever matches the documents\n"
+            "- Output ONLY the search query, no explanation, no quotes\n"
+            "- Maximum 25 words\n\n"
+            f"Conversation context:\n{context_lines}\n\n"
+            f"User question: {query}\n\n"
+            "Search query:"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        result = await self.client.chat(messages)
+        rewritten = result.strip().strip('"').strip("'")
+        # Fall back to original if the model returns something empty or too long
+        if not rewritten or len(rewritten) > 300:
+            return query
+        return rewritten
+
     async def generate_title(self, first_message: str) -> str:
         prompt = f"""Generate a very short title (max 5 words) for a conversation that starts with this message:
 "{first_message}"

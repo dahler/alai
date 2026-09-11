@@ -489,6 +489,24 @@ async def send_message_stream(
 
     do_rag = router_result.action == RouterAction.RAG_SEARCH
 
+    # Query rewriting: before hitting RAG, ask the LLM to rephrase the
+    # user's question into better search terms using recent conversation
+    # context. The rewritten query is used ONLY for retrieval — the LLM
+    # still sees and answers the original question.
+    search_query = data.content
+    if do_rag:
+        prev_history = await msg_service.get_recent_context(
+            conversation_id, limit=6
+        )
+        context_for_rewrite = list(prev_history) + [
+            {"role": "user", "content": data.content}
+        ]
+        search_query = await ai_service.rewrite_query(
+            data.content, context_for_rewrite
+        )
+        log(f"Original query : {data.content[:120]}")
+        log(f"Rewritten query: {search_query[:120]}")
+
     if do_rag:
         log("-" * 60)
         label = (
@@ -502,7 +520,7 @@ async def send_message_stream(
         if settings.ENABLE_KNOWLEDGE_GRAPH:
             kg_service = KnowledgeGraphService(db)
             hybrid_results = await kg_service.hybrid_search(
-                query=data.content,
+                query=search_query,
                 user_id=user.id if user else None,
                 top_k=5,
                 vector_weight=0.6,
@@ -571,7 +589,7 @@ async def send_message_stream(
             # group expansion and BM25 re-ranking are applied.
             rag_service = RAGService(db)
             rag_results = await rag_service.search(
-                query=data.content,
+                query=search_query,
                 user_id=user.id if user else None,
             )
             if rag_results:
