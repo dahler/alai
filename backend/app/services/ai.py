@@ -86,7 +86,7 @@ class AIService:
 "{first_message}"
 
 Return only the title, nothing else. No quotes, no punctuation at the end.
-IMPORTANT: Generate the title in the same language as the message."""
+IMPORTANT: You MUST write the title in either English or Bahasa Indonesia only. Do not use any other language."""
 
         messages = [{"role": "user", "content": prompt}]
         title = await self.client.chat(messages)
