@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { Message, Attachment, Source } from '../../types/chat'
 import type { Components } from 'react-markdown'
 import { documentsService } from '../../services/documents'
@@ -20,7 +20,6 @@ function ProcessBox({ lines, isStreaming }: { lines: string[]; isStreaming: bool
   const [expanded, setExpanded] = useState(true)
 
   useEffect(() => {
-    // Auto-collapse once the answer is complete
     if (!isStreaming) setExpanded(false)
   }, [isStreaming])
 
@@ -64,7 +63,6 @@ function ProcessBox({ lines, isStreaming }: { lines: string[]; isStreaming: bool
   )
 }
 
-// Attachment display component
 function AttachmentDisplay({ attachment }: { attachment: Attachment }) {
   const [isExpanded, setIsExpanded] = useState(false)
 
@@ -92,7 +90,6 @@ function AttachmentDisplay({ attachment }: { attachment: Attachment }) {
     )
   }
 
-  // Document attachment
   return (
     <a
       href={`/api/uploads/${attachment.filename}`}
@@ -101,40 +98,18 @@ function AttachmentDisplay({ attachment }: { attachment: Attachment }) {
       className="flex items-center gap-3 p-3 my-2 bg-dark-chat rounded-lg hover:bg-opacity-80 transition-colors max-w-xs"
     >
       <div className="w-10 h-10 bg-dark-sidebar rounded flex items-center justify-center flex-shrink-0">
-        <svg
-          className="w-5 h-5 text-dark-muted"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-          />
+        <svg className="w-5 h-5 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-dark-text truncate">
-          {attachment.original_filename}
-        </p>
-        <p className="text-xs text-dark-muted">
-          {formatFileSize(attachment.file_size)}
-        </p>
+        <p className="text-sm text-dark-text truncate">{attachment.original_filename}</p>
+        <p className="text-xs text-dark-muted">{formatFileSize(attachment.file_size)}</p>
       </div>
-      <svg
-        className="w-4 h-4 text-dark-muted flex-shrink-0"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-        />
+      <svg className="w-4 h-4 text-dark-muted flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
       </svg>
     </a>
   )
@@ -144,9 +119,9 @@ function FileDownloadButton({ href, label }: { href: string; label: string }) {
   const [downloading, setDownloading] = useState(false)
   const ext = label.split('.').pop()?.toLowerCase() ?? ''
   const iconColor: Record<string, string> = {
-    xlsx: 'text-green-400', csv: 'text-green-400',
-    docx: 'text-blue-400', pdf: 'text-red-400',
-    pptx: 'text-orange-400',
+    xlsx: 'text-green-600', csv: 'text-green-600',
+    docx: 'text-blue-600', pdf: 'text-red-500',
+    pptx: 'text-orange-500',
   }
 
   const handleClick = async (e: React.MouseEvent) => {
@@ -168,7 +143,6 @@ function FileDownloadButton({ href, label }: { href: string; label: string }) {
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch {
-      // fallback: open in new tab
       window.open(href, '_blank', 'noreferrer')
     } finally {
       setDownloading(false)
@@ -180,19 +154,34 @@ function FileDownloadButton({ href, label }: { href: string; label: string }) {
       <button
         onClick={handleClick}
         disabled={downloading}
-        className="inline-flex items-center gap-2 px-3 py-2 bg-dark-sidebar border border-dark-chat rounded-lg hover:border-blue-500 transition-colors group disabled:opacity-60"
+        className="inline-flex items-center gap-2 px-3 py-2 bg-dark-sidebar border border-dark-chat rounded-lg hover:border-dark-hover transition-colors group disabled:opacity-60"
       >
         <svg className={`w-5 h-5 flex-shrink-0 ${iconColor[ext] ?? 'text-dark-muted'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
         </svg>
-        <span className="text-sm text-dark-text group-hover:text-blue-400 transition-colors">
+        <span className="text-sm text-dark-text group-hover:text-dark-hover transition-colors">
           {downloading ? 'Downloading…' : label}
         </span>
-        <svg className="w-4 h-4 text-dark-muted group-hover:text-blue-400 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        <svg className="w-4 h-4 text-dark-muted group-hover:text-dark-hover transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
         </svg>
       </button>
     </span>
+  )
+}
+
+// Inline citation badge — superscript style
+function CiteBadge({ num, onClick, filename }: { num: number; onClick: () => void; filename: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={filename}
+      className="inline-flex items-center justify-center min-w-[1.15rem] h-[1.15rem] px-0.5 text-[9px] font-bold bg-amber-100 text-amber-700 border border-amber-300 rounded-full mx-0.5 hover:bg-amber-200 hover:border-amber-500 transition-colors align-middle relative -top-px"
+    >
+      {num}
+    </button>
   )
 }
 
@@ -200,7 +189,6 @@ function makeMarkdownComponents(
   sources: Source[],
   onView: (s: Source) => void
 ): Components {
-  // Replace [N] citation markers in a text string with clickable buttons
   function processCiteStr(text: string, keyPrefix: string): ReactNode[] {
     const parts = text.split(/(\[\d+\])/g)
     if (parts.length === 1) return [text]
@@ -211,14 +199,12 @@ function makeMarkdownComponents(
         const src = sources.find(s => s.number === num)
         if (src) {
           return (
-            <button
+            <CiteBadge
               key={`${keyPrefix}-${i}`}
+              num={num}
               onClick={() => onView(src)}
-              title={src.filename}
-              className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold bg-blue-600 text-white rounded-full mx-0.5 hover:bg-blue-500 transition-colors align-middle"
-            >
-              {num}
-            </button>
+              filename={src.filename}
+            />
           )
         }
       }
@@ -226,7 +212,6 @@ function makeMarkdownComponents(
     })
   }
 
-  // Walk ReactNode children, replacing citation strings with buttons
   function withCites(children: ReactNode): ReactNode {
     if (typeof children === 'string') {
       const result = processCiteStr(children, 'c')
@@ -283,7 +268,6 @@ function makeMarkdownComponents(
     ),
 
     a: ({ href, children }) => {
-      // Remark parses [N] as a link reference with no href — detect and render as citation button
       if (!href) {
         const text = typeof children === 'string'
           ? children
@@ -296,19 +280,12 @@ function makeMarkdownComponents(
             const src = sources.find(s => s.number === num)
             if (src) {
               return (
-                <button
-                  onClick={() => onView(src)}
-                  title={src.filename}
-                  className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold bg-blue-600 text-white rounded-full mx-0.5 hover:bg-blue-500 transition-colors align-middle"
-                >
-                  {num}
-                </button>
+                <CiteBadge num={num} onClick={() => onView(src)} filename={src.filename} />
               )
             }
           }
         }
       }
-      // Generated file download link
       if (href && href.startsWith('/api/files/download/')) {
         return <FileDownloadButton href={href} label={
           typeof children === 'string' ? children
@@ -324,25 +301,23 @@ function makeMarkdownComponents(
       )
     },
 
-    hr: () => <hr className="my-6 border-dark-muted" />,
+    hr: () => <hr className="my-6 border-dark-chat" />,
 
     table: ({ children }) => (
-      <div className="overflow-x-auto my-4">
-        <table className="min-w-full border border-dark-muted">{children}</table>
+      <div className="overflow-x-auto my-4 rounded-lg border border-dark-chat">
+        <table className="min-w-full">{children}</table>
       </div>
     ),
     thead: ({ children }) => (
-      <thead className="bg-dark-sidebar">{children}</thead>
+      <thead className="bg-dark-sidebar border-b border-dark-chat">{children}</thead>
     ),
-    tbody: ({ children }) => <tbody>{children}</tbody>,
-    tr: ({ children }) => (
-      <tr className="border-b border-dark-muted">{children}</tr>
-    ),
+    tbody: ({ children }) => <tbody className="divide-y divide-dark-chat">{children}</tbody>,
+    tr: ({ children }) => <tr className="hover:bg-dark-sidebar transition-colors">{children}</tr>,
     th: ({ children }) => (
-      <th className="px-4 py-2 text-left font-semibold text-dark-text">{children}</th>
+      <th className="px-4 py-2.5 text-left text-xs font-semibold text-dark-muted uppercase tracking-wide">{children}</th>
     ),
     td: ({ children }) => (
-      <td className="px-4 py-2 text-dark-text">{children}</td>
+      <td className="px-4 py-2.5 text-sm text-dark-text">{children}</td>
     ),
 
     code: ({ className, children, ...props }) => {
@@ -352,7 +327,7 @@ function makeMarkdownComponents(
       if (isInline) {
         return (
           <code
-            className="bg-dark-chat px-1.5 py-0.5 rounded text-sm font-mono text-pink-400"
+            className="bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-sm font-mono text-amber-800"
             {...props}
           >
             {children}
@@ -361,43 +336,26 @@ function makeMarkdownComponents(
       }
 
       return (
-        <div className="relative group my-4">
-          {match && (
-            <div className="absolute top-0 left-0 px-3 py-1 text-xs text-dark-muted bg-dark-chat rounded-tl rounded-br">
-              {match[1]}
-            </div>
-          )}
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText(String(children).replace(/\n$/, ''))
-            }}
-            className="absolute right-2 top-2 p-1.5 rounded bg-dark-chat opacity-0 group-hover:opacity-100 transition-opacity z-10"
-            title="Copy code"
-          >
-            <svg
-              className="w-4 h-4 text-dark-text"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+        <div className="relative group my-4 rounded-xl overflow-hidden border border-dark-chat">
+          <div className="flex items-center justify-between px-4 py-2 bg-dark-sidebar border-b border-dark-chat">
+            <span className="text-xs text-dark-muted font-mono">{match?.[1] || 'code'}</span>
+            <button
+              onClick={() => navigator.clipboard.writeText(String(children).replace(/\n$/, ''))}
+              className="flex items-center gap-1.5 text-xs text-dark-muted hover:text-dark-text transition-colors"
+              title="Copy code"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-              />
-            </svg>
-          </button>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              Copy
+            </button>
+          </div>
           <SyntaxHighlighter
-            style={oneDark}
+            style={oneLight}
             language={match?.[1] || 'text'}
             PreTag="div"
-            customStyle={{
-              margin: 0,
-              borderRadius: '0.5rem',
-              padding: '1rem',
-              paddingTop: match ? '2rem' : '1rem',
-            }}
+            customStyle={{ margin: 0, borderRadius: 0, padding: '1rem', background: '#faf8f5' }}
           >
             {String(children).replace(/\n$/, '')}
           </SyntaxHighlighter>
@@ -409,16 +367,15 @@ function makeMarkdownComponents(
   }
 }
 
-// Simple streaming text component - renders text without full markdown parsing
 function StreamingText({ content }: { content: string }) {
-  // During streaming, render with basic formatting only
-  // This avoids ReactMarkdown re-parsing incomplete markdown
   return (
     <div className="whitespace-pre-wrap leading-7 text-dark-text">
       {content}
     </div>
   )
 }
+
+// ── Document viewer modal ──────────────────────────────────────────────────────
 
 function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () => void }) {
   const [chunks, setChunks] = useState<DocumentChunk[]>([])
@@ -458,82 +415,118 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/50 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="bg-dark-sidebar rounded-xl shadow-2xl flex flex-col w-full max-w-2xl"
-        style={{ maxHeight: '85vh' }}
-        onClick={(e) => e.stopPropagation()}
+        className="bg-dark-bg rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col w-full sm:max-w-2xl border border-dark-chat"
+        style={{ maxHeight: '90vh' }}
+        onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-dark-chat flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-bold">
-              {source.number}
-            </span>
-            <span className="text-sm text-dark-text font-medium truncate">{source.filename}</span>
-            {citedChunk?.page_start ? (
-              <span className="flex-shrink-0 text-[10px] text-dark-muted bg-dark-chat rounded px-1.5 py-0.5">
-                p.{citedChunk.page_start}
-              </span>
-            ) : null}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-dark-chat flex-shrink-0">
+          <div className="w-9 h-9 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-amber-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
           </div>
-          <button onClick={onClose} title="Close"
-            className="ml-3 p-1.5 rounded hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors flex-shrink-0">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-dark-text truncate">{source.filename}</p>
+            <p className="text-xs text-dark-muted">
+              {citedChunk?.page_start
+                ? `Page ${citedChunk.page_start}${citedChunk.page_end !== citedChunk.page_start ? `–${citedChunk.page_end}` : ''}`
+                : `Source ${source.number}`}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-dark-chat text-dark-muted hover:text-dark-text transition-colors flex-shrink-0"
+          >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* Chunk list */}
+        {/* Cited passage — shown prominently when found */}
+        {!loading && citedChunk && (
+          <div className="px-5 py-4 bg-amber-50 border-b border-amber-200/80 flex-shrink-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-4 h-4 rounded-full bg-amber-600 text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                {source.number}
+              </span>
+              <span className="text-xs font-semibold text-amber-700 uppercase tracking-wider">Cited passage</span>
+              {citedChunk.heading_context && (
+                <span className="text-xs text-amber-600 truncate">· {citedChunk.heading_context}</span>
+              )}
+            </div>
+            <p className="text-sm text-dark-text leading-relaxed line-clamp-5 whitespace-pre-wrap">
+              {citedChunk.chunk_text}
+            </p>
+          </div>
+        )}
+
+        {/* Full document chunks */}
         <div className="flex-1 overflow-y-auto">
           {loading ? (
-            <div className="flex items-center justify-center h-32">
-              <svg className="w-4 h-4 animate-spin text-dark-muted" fill="none" viewBox="0 0 24 24">
+            <div className="flex items-center justify-center h-40">
+              <svg className="w-5 h-5 animate-spin text-dark-muted" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
             </div>
           ) : chunks.length === 0 ? (
-            <div className="flex items-center justify-center h-32 text-dark-muted text-sm">
-              Content not available
+            <div className="flex flex-col items-center justify-center h-40 gap-2 text-dark-muted">
+              <svg className="w-8 h-8 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <p className="text-sm">Content not available</p>
             </div>
           ) : (
-            <div className="p-3 space-y-1.5">
-              {chunks.map((chunk) => {
-                const highlighted = isMatch(chunk)
-                return (
-                  <div key={chunk.id} ref={highlighted ? highlightRef : undefined}
-                    className={`rounded-lg px-3 py-2.5 border transition-colors ${
-                      highlighted
-                        ? 'border-amber-400/50 bg-amber-400/10'
-                        : 'border-transparent hover:bg-dark-chat/30'
-                    }`}
-                  >
-                    {chunk.heading_context && (
-                      <p className="text-[10px] text-dark-muted font-semibold uppercase tracking-wider mb-1 truncate">
-                        {chunk.heading_context}
+            <div className="py-3">
+              <p className="text-[10px] font-semibold text-dark-muted uppercase tracking-wider px-5 pb-2">
+                Full document · {chunks.length} sections
+              </p>
+              <div className="space-y-px">
+                {chunks.map((chunk) => {
+                  const highlighted = isMatch(chunk)
+                  return (
+                    <div
+                      key={chunk.id}
+                      ref={highlighted ? highlightRef : undefined}
+                      className={`mx-3 px-3 py-3 rounded-lg border-l-2 transition-colors ${
+                        highlighted
+                          ? 'border-amber-500 bg-amber-50'
+                          : 'border-transparent hover:bg-dark-chat/40'
+                      }`}
+                    >
+                      {chunk.heading_context && (
+                        <p className="text-[10px] text-dark-muted font-semibold uppercase tracking-wider mb-1 truncate">
+                          {chunk.heading_context}
+                        </p>
+                      )}
+                      {highlighted && (
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0" />
+                          <span className="text-[10px] text-amber-600 font-semibold uppercase tracking-wider">Cited here</span>
+                        </div>
+                      )}
+                      <p className={`text-xs leading-relaxed whitespace-pre-wrap ${
+                        highlighted ? 'text-dark-text' : 'line-clamp-3 text-dark-muted'
+                      }`}>
+                        {chunk.chunk_text}
                       </p>
-                    )}
-                    {highlighted && (
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-                        <span className="text-[10px] text-amber-400 font-semibold uppercase tracking-wider">Cited</span>
-                      </div>
-                    )}
-                    <p className={`text-xs leading-relaxed whitespace-pre-wrap ${highlighted ? 'text-dark-text' : 'line-clamp-3 text-dark-muted'}`}>
-                      {chunk.chunk_text}
-                    </p>
-                    {chunk.page_start > 0 && (
-                      <p className="text-[10px] text-dark-muted mt-1.5 opacity-50">
-                        p.{chunk.page_start}{chunk.page_end !== chunk.page_start ? `–${chunk.page_end}` : ''}
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
+                      {chunk.page_start > 0 && (
+                        <p className="text-[10px] text-dark-muted mt-1.5 opacity-60">
+                          p.{chunk.page_start}{chunk.page_end !== chunk.page_start ? `–${chunk.page_end}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -541,6 +534,8 @@ function DocumentViewerModal({ source, onClose }: { source: Source; onClose: () 
     </div>
   )
 }
+
+// ── Main message component ─────────────────────────────────────────────────────
 
 export function ChatMessage({ message, isStreaming = false, sources = [], processLog }: ChatMessageProps) {
   const isUser = message.role === 'user'
@@ -559,85 +554,84 @@ export function ChatMessage({ message, isStreaming = false, sources = [], proces
   return (
     <>
       {viewing && <DocumentViewerModal source={viewing} onClose={() => setViewing(null)} />}
-    <div
-      className={`flex gap-4 px-6 py-5 ${
-        isUser ? 'bg-dark-bg' : 'bg-dark-sidebar'
-      }`}
-    >
-      {/* Avatar */}
-      <div
-        className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-sm font-medium text-white ${
-          isUser ? 'bg-blue-600' : 'bg-dark-hover'
-        }`}
-      >
-        {isUser ? 'U' : 'AI'}
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 min-w-0 overflow-hidden">
-        <div className="font-medium text-sm mb-2 text-dark-muted">
-          {isUser ? 'You' : 'ALAI'}
+      <div className={`flex gap-4 px-6 py-5 ${isUser ? 'bg-dark-bg' : 'bg-dark-sidebar'}`}>
+        {/* Avatar */}
+        <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold text-white ${
+          isUser ? 'bg-stone-400' : 'bg-dark-hover'
+        }`}>
+          {isUser ? 'U' : 'AI'}
         </div>
 
-        {/* Attachments */}
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-3">
-            {attachments.map((attachment) => (
-              <AttachmentDisplay key={attachment.id} attachment={attachment} />
-            ))}
+        {/* Content */}
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="font-medium text-sm mb-2 text-dark-muted">
+            {isUser ? 'You' : 'ALAI'}
           </div>
-        )}
 
-        {/* Process box — visible for assistant messages only */}
-        {!isUser && processLog && processLog.length > 0 && (
-          <ProcessBox lines={processLog} isStreaming={isStreaming} />
-        )}
-
-        {/* Message content */}
-        <div className="max-w-none">
-          {message.content && (
-            isStreaming ? (
-              // During streaming: use simple text rendering for performance
-              <StreamingText content={message.content} />
-            ) : (
-              // After streaming complete: render full markdown
-              <ReactMarkdown
-                key={contentKey}
-                remarkPlugins={[remarkGfm]}
-                components={mdComponents}
-              >
-                {message.content}
-              </ReactMarkdown>
-            )
-          )}
-          {isStreaming && (
-            <span className="inline-block w-2 h-5 bg-dark-hover animate-pulse ml-1 align-middle" />
-          )}
-        </div>
-
-        {/* Sources bar — fallback when sources exist */}
-        {!isUser && sources.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-dark-chat">
-            <p className="text-xs text-dark-muted mb-2 font-medium uppercase tracking-wide">Sources</p>
-            <div className="flex flex-wrap gap-2">
-              {sources.map((src) => (
-                <button
-                  key={src.document_id}
-                  onClick={() => setViewing(src)}
-                  title={src.filename}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-dark-chat hover:bg-dark-hover text-xs text-dark-text transition-colors max-w-[200px]"
-                >
-                  <span className="flex-shrink-0 w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-bold">
-                    {src.number}
-                  </span>
-                  <span className="truncate">{src.filename}</span>
-                </button>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {attachments.map((attachment) => (
+                <AttachmentDisplay key={attachment.id} attachment={attachment} />
               ))}
             </div>
+          )}
+
+          {!isUser && processLog && processLog.length > 0 && (
+            <ProcessBox lines={processLog} isStreaming={isStreaming} />
+          )}
+
+          <div className="max-w-none">
+            {message.content && (
+              isStreaming ? (
+                <StreamingText content={message.content} />
+              ) : (
+                <ReactMarkdown
+                  key={contentKey}
+                  remarkPlugins={[remarkGfm]}
+                  components={mdComponents}
+                >
+                  {message.content}
+                </ReactMarkdown>
+              )
+            )}
+            {isStreaming && (
+              <span className="inline-block w-2 h-5 bg-dark-hover animate-pulse ml-1 align-middle" />
+            )}
           </div>
-        )}
+
+          {/* Sources list */}
+          {!isUser && sources.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-dark-chat">
+              <p className="text-[11px] font-semibold text-dark-muted uppercase tracking-wider mb-2">
+                Sources
+              </p>
+              <div className="space-y-0.5">
+                {sources.map((src) => (
+                  <button
+                    key={src.document_id ?? src.number}
+                    onClick={() => setViewing(src)}
+                    className="flex items-center gap-2.5 w-full text-left px-2.5 py-2 rounded-lg hover:bg-dark-chat transition-colors group"
+                  >
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-amber-600 text-white flex items-center justify-center text-[10px] font-bold">
+                      {src.number}
+                    </span>
+                    <svg className="w-3.5 h-3.5 text-dark-muted flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <span className="text-xs text-dark-text truncate flex-1 group-hover:text-dark-hover transition-colors">
+                      {src.filename}
+                    </span>
+                    <svg className="w-3 h-3 text-dark-muted opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
     </>
   )
 }
