@@ -77,10 +77,10 @@ function runStep(
 
 // ─── Visual constants ──────────────────────────────────────────────────────────
 
-const C_HUB      = '#818cf8'   // indigo-400  — hub nodes
-const C_LEAF     = '#38bdf8'   // sky-400     — non-hub nodes
-const C_SELECTED = '#f59e0b'   // amber
-const C_OUT      = '#c084fc'   // purple-400  — nodes referenced by selected
+const C_HUB      = '#b45309'   // amber-700   — hub nodes
+const C_LEAF     = '#78716c'   // stone-500   — non-hub nodes
+const C_SELECTED = '#d97706'   // amber-600
+const C_OUT      = '#f59e0b'   // amber-400   — nodes referenced by selected
 const C_IN       = '#34d399'   // emerald-400 — nodes that reference selected
 
 function nodeRadius(n: SimNode) {
@@ -610,7 +610,7 @@ export function DocumentGraph() {
                       const tgt = graphData.nodes.find((n) => n.id === e.target)
                       return (
                         <div key={i} className="flex items-start gap-2 text-xs">
-                          <span className="text-purple-400 font-mono flex-shrink-0 mt-0.5">→</span>
+                          <span className="text-amber-600 font-mono flex-shrink-0 mt-0.5">→</span>
                           <button className="text-left flex-1 text-dark-text hover:text-white break-words"
                             onClick={() => setSelectedId(e.target)}>
                             {tgt?.label ?? `Doc #${e.target}`}

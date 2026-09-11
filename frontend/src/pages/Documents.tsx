@@ -100,7 +100,7 @@ function GraphStatusBadge({ status }: { status: GraphStatus | undefined }) {
     )
   if (status === 'done')
     return (
-      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-purple-900/30 text-purple-400 rounded" title="Knowledge graph extracted">
+      <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-amber-100 text-amber-700 rounded" title="Knowledge graph extracted">
         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
@@ -410,7 +410,7 @@ export function Documents() {
         {graphStats && (
           <div className="flex items-center gap-3 text-sm">
             <div className="flex items-center gap-2 px-3 py-1 bg-dark-sidebar rounded-lg">
-              <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
               <span className="text-dark-muted">Entities:</span>
@@ -752,7 +752,7 @@ export function Documents() {
 
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {doc.is_company_doc && (
-                      <span className="px-2 py-0.5 text-xs bg-purple-900/30 text-purple-400 rounded">Company</span>
+                      <span className="px-2 py-0.5 text-xs bg-amber-100 text-amber-700 rounded">Company</span>
                     )}
                     <ProcessingBadge status={doc.processing_status} />
                     <GraphStatusBadge status={doc.graph_status} />

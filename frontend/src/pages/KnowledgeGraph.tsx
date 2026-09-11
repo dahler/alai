@@ -8,8 +8,8 @@ import { documentsService, Document } from '../services/documents'
 const TYPE_COLORS: Record<string, string> = {
   pasal: '#f59e0b',
   person: '#60a5fa',
-  organization: '#a78bfa',
-  company: '#818cf8',
+  organization: '#d97706',
+  company: '#b45309',
   regulation: '#fb923c',
   product: '#34d399',
   technology: '#22d3ee',
