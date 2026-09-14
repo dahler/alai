@@ -498,9 +498,9 @@ async def send_message_stream(
         prev_history = await msg_service.get_recent_context(
             conversation_id, limit=6
         )
-        context_for_rewrite = list(prev_history) + [
-            {"role": "user", "content": data.content}
-        ]
+        context_for_rewrite = [
+            {"role": m.role, "content": m.content} for m in prev_history
+        ] + [{"role": "user", "content": data.content}]
         search_query = await ai_service.rewrite_query(
             data.content, context_for_rewrite
         )
