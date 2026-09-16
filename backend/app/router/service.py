@@ -166,20 +166,26 @@ class RouterService:
                 reason="text_editing_bypass",
             )
 
-        # Context-aware bypass: if the previous user turn was a text-editing
-        # request and the current message looks like plain pasted text (no
-        # question mark, no question word, no action verb), inherit the intent.
+        # Context-aware bypass: if ANY of the last 3 user turns was a
+        # text-editing request, and the current message looks like plain
+        # pasted text (no question mark, no question word), inherit editing
+        # intent. A single follow-up question resets context.
         if recent_messages:
-            prev_user = next(
-                (
-                    m.get("content", "").strip().lower()
-                    for m in reversed(recent_messages)
-                    if m.get("role") == "user"
-                ),
-                "",
+            recent_user_msgs = [
+                m.get("content", "").strip().lower()
+                for m in recent_messages
+                if m.get("role") == "user"
+            ]
+            # Check last 3 user messages for any editing intent
+            any_edit_in_context = any(
+                any(msg.startswith(p) for p in _EDIT_PREFIXES)
+                for msg in recent_user_msgs[-3:]
             )
-            last_was_edit = any(
-                prev_user.startswith(p) for p in _EDIT_PREFIXES
+            # The most recent user message resets context if it's a question
+            last_user = recent_user_msgs[-1] if recent_user_msgs else ""
+            last_was_question = (
+                "?" in last_user
+                or any(last_user.startswith(w) for w in _QUESTION_WORDS)
             )
             is_plain_text = (
                 "?" not in q_lower
@@ -188,7 +194,7 @@ class RouterService:
                 )
                 and len(q_lower) > 10
             )
-            if last_was_edit and is_plain_text:
+            if any_edit_in_context and is_plain_text and not last_was_question:
                 log("DIRECT (editing intent inherited from context)")
                 log("=" * 50)
                 return RouterResult(
