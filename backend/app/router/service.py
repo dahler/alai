@@ -33,11 +33,11 @@ _PROMPT = """\
 You are a request router. Pick exactly one action for the user request.
 
 ━━━ ACTIONS ━━━
-direct_answer   Answer using general world knowledge only. No company docs needed.
-rag_search      Search the user's internal company knowledge base (SOPs, policies,
-                procedures, roles, org structure, approval thresholds, workflows).
-agentic         Use tools: live data (prices/rates/weather/news), file generation
-                (Excel/Word/PDF/PowerPoint), or email operations.
+direct_answer   General world knowledge. No company docs needed.
+rag_search      Search internal knowledge base (SOPs, policies,
+                procedures, roles, approval thresholds, workflows).
+agentic         Tools: live data, file generation (Excel/Word/PDF),
+                or email operations.
 
 ━━━ INPUT ━━━
 Request: {query}
@@ -49,7 +49,16 @@ User has a knowledge base: {has_knowledge_base}
 Step 1. Is this a greeting or small talk? (hi, thanks, oke, selamat pagi…)
         YES → action = direct_answer
 
-Step 2. Does the request EXPLICITLY ask to generate/create/download a file,
+Step 2a. Is this a text-editing / writing task?
+        Text editing: fix, correct, proofread, improve, rewrite, rephrase,
+          translate, summarise, summarize, paraphrase, shorten, lengthen,
+          make formal, check grammar, perbaiki kalimat, terjemahkan, ringkas,
+          tolong perbaiki, ubah ke bahasa, in english please
+        This includes requests that PASTE a sentence or paragraph and ask
+        the assistant to fix, improve, or translate it.
+        YES → action = direct_answer  (no company docs needed for editing)
+
+Step 2b. Does the request EXPLICITLY ask to generate/create/download a file,
         OR ask for live data that requires an external source RIGHT NOW?
         File generation: user says buat/create/generate/buatkan/download +
           (laporan/Excel/Word/PDF/PowerPoint/rekap/tabel/dokumen)
@@ -80,7 +89,8 @@ Step 5. All other questions answerable from general world knowledge
 Write your reasoning FIRST, then the action. The action must be consistent
 with your reasoning. Format:
 
-{{"reasoning": "<one sentence explaining which step matched and why>", "action": "<action>", "confidence": <0.0-1.0>}}
+{{"reasoning": "<one sentence: which step matched and why>",
+"action": "<action>", "confidence": <0.0-1.0>}}
 
 JSON:"""
 
@@ -124,6 +134,26 @@ class RouterService:
                 action=RouterAction.VISION_ANALYSIS,
                 confidence=0.99,
                 reason="image_attached",
+            )
+
+        # Hard-coded bypass: text editing / writing tasks never need RAG
+        _EDIT_PREFIXES = (
+            "fix ", "fix:", "correct ", "proofread ", "improve ",
+            "rewrite ", "rephrase ", "translate ", "paraphrase ",
+            "paraphrase:", "summarise ", "summarize ", "shorten ",
+            "lengthen ", "make this ", "make it ", "check grammar",
+            "perbaiki ", "terjemahkan ", "ringkas ", "ubah ke ",
+            "tolong perbaiki", "in english please", "please translate",
+            "please fix", "please correct", "please improve",
+        )
+        q_lower = query.strip().lower()
+        if any(q_lower.startswith(p) for p in _EDIT_PREFIXES):
+            log("DIRECT (text-editing bypass)")
+            log("=" * 50)
+            return RouterResult(
+                action=RouterAction.DIRECT_ANSWER,
+                confidence=0.99,
+                reason="text_editing_bypass",
             )
 
         # Hard-coded bypass: pure conversational / greeting messages
