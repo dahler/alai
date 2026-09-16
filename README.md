@@ -1,6 +1,15 @@
-# ALAI - AI Chatbot
+# ALAI — Enterprise AI Assistant
 
-A full-stack AI chatbot application similar to ChatGPT, powered by Ollama with Qwen model.
+A full-stack AI assistant powered by local Ollama models with RAG, Knowledge Graph,
+agent tools, and Claude.ai MCP integration.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, components, data flow, DB schema |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | History of all changes with rationale |
+| [docs/TESTING.md](docs/TESTING.md) | Testing scenarios, regression checklist, how to run tests |
 
 ## Features
 
