@@ -21,21 +21,47 @@
 
 ## Running Tests
 
-### Backend router bypass tests (no server needed)
+### Pre-push check (run this before every push)
+
+Single script that runs all automated checks:
 
 ```powershell
-cd backend
-.\venv\Scripts\python.exe test_router.py
+.\scripts\check.ps1
 ```
 
-Expected: **31/31 passed, 0 failed**
+What it runs:
+1. **Backend router tests** — `backend\test_router.py` (31 cases, no server needed)
+2. **Frontend build** — `tsc && vite build` (catches TypeScript errors and broken imports)
+3. **Backend import check** — `backend\scripts\import_check.py` (catches syntax errors and circular imports)
+
+Expected output ends with:
+```
+ALL CHECKS PASSED -- safe to push
+```
+
+If any step fails, the script exits with code 1 and lists what failed.
+
+### Individual checks
+
+```powershell
+# Router tests only
+cd backend
+.\venv\Scripts\python.exe test_router.py
+
+# Frontend build only
+cd frontend
+npm run build
+
+# Backend imports only
+cd backend
+.\venv\Scripts\python.exe scripts\import_check.py
+```
 
 ### RAG quality test (requires running backend + Ollama)
 
 ```powershell
-cd ..   # project root
-.\backend\venv\Scripts\python.exe test_rag_claude.py \
-    --api-url http://localhost:8000 \
+.\backend\venv\Scripts\python.exe test_rag_claude.py `
+    --api-url http://localhost:8000 `
     --api-key <RAG_API_KEY>
 ```
 
@@ -306,10 +332,15 @@ curl -X POST https://api-alai.antaragpt.com/api/rag/query `
 
 ## Regression Checklist
 
-Run after every significant change before pushing:
+**Run `.\scripts\check.ps1` before every push.** It covers steps 1-3 automatically.
 
-### Router
-- [ ] `.\venv\Scripts\python.exe test_router.py` → 31/31 pass
+### Automated (covered by check.ps1)
+- [ ] `scripts\check.ps1` exits 0 — all 3 checks green
+- [ ] Router bypass tests: 31/31 pass
+- [ ] Frontend build: `tsc && vite build` succeeds with no errors
+- [ ] Backend imports: all key modules load without errors
+
+### Router (manual)
 - [ ] "fix this sentence: ..." → `direct_answer`, no RAG sources
 - [ ] "what is the SOP?" → `rag_search`, sources appear
 - [ ] Editing session (3+ turns) then SOP question → switches to `rag_search`
