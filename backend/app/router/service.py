@@ -2,9 +2,14 @@
 RouterService: classifies every user message before it enters the pipeline.
 
 Uses SmartLLM (Claude -> OpenAI -> Ollama) for ALL routing decisions.
-No keyword lists, no regex heuristics — pure language-model understanding.
+Recent conversation history is injected into the prompt so the LLM can
+detect intent continuity (e.g. ongoing editing session) and topic switches
+(e.g. user switches from editing to asking an SOP question).
 
-Only hard-coded bypass: has_images=True -> VISION_ANALYSIS (100% certain).
+Only hard-coded bypasses:
+  - has_images=True        -> VISION_ANALYSIS  (certain)
+  - clear edit prefix      -> DIRECT_ANSWER    (certain, saves latency)
+  - one-word greetings     -> DIRECT_ANSWER    (certain, saves latency)
 """
 
 import json
@@ -29,6 +34,7 @@ _SYSTEM = (
     "Respond ONLY with a valid JSON object — no markdown, no explanation."
 )
 
+# Unambiguous edit prefixes — bypass LLM for speed
 _EDIT_PREFIXES = (
     "fix ", "fix:", "correct ", "proofread ", "improve ",
     "rewrite ", "rephrase ", "translate ", "paraphrase ",
@@ -39,78 +45,70 @@ _EDIT_PREFIXES = (
     "please fix", "please correct", "please improve",
 )
 
-_QUESTION_WORDS = (
-    "what ", "how ", "who ", "when ", "where ", "why ",
-    "is ", "are ", "can ", "could ", "would ", "should ",
-    "apa ", "bagaimana ", "siapa ", "kapan ", "di mana ",
-    "berapa ", "apakah ", "bisakah ", "tolong cari", "cari ",
-    "does ", "do ", "did ", "has ", "have ", "which ",
-)
-
 _PROMPT = """\
 You are a request router. Pick exactly one action for the user request.
 
-━━━ ACTIONS ━━━
-direct_answer   General world knowledge. No company docs needed.
-rag_search      Search internal knowledge base (SOPs, policies,
-                procedures, roles, approval thresholds, workflows).
-agentic         Tools: live data, file generation (Excel/Word/PDF),
-                or email operations.
+--- ACTIONS ---
+direct_answer   General world knowledge, text editing/fixing/translation,
+                or a continuation of an ongoing editing session.
+rag_search      Search the internal company knowledge base (SOPs, policies,
+                procedures, roles, approval thresholds, org structure).
+agentic         Requires tools: live data (prices/rates/news/weather),
+                file generation (Excel/Word/PDF/PPT), or email operations.
 
-━━━ INPUT ━━━
-Request: {query}
+{context_block}\
+--- CURRENT REQUEST ---
+{query}
+
 Has file attachments : {has_attachments}
 Has image attachments: {has_images}
 User has a knowledge base: {has_knowledge_base}
 
-━━━ DECISION STEPS — follow in order ━━━
-Step 1. Is this a greeting or small talk? (hi, thanks, oke, selamat pagi…)
-        YES → action = direct_answer
+--- DECISION STEPS (follow in order) ---
+1. Greeting or small talk? (hi, thanks, oke, selamat pagi...)
+   YES -> direct_answer
 
-Step 2a. Is this a text-editing / writing task?
-        Text editing: fix, correct, proofread, improve, rewrite, rephrase,
-          translate, summarise, summarize, paraphrase, shorten, lengthen,
-          make formal, check grammar, perbaiki kalimat, terjemahkan, ringkas,
-          tolong perbaiki, ubah ke bahasa, in english please
-        This includes requests that PASTE a sentence or paragraph and ask
-        the assistant to fix, improve, or translate it.
-        YES → action = direct_answer  (no company docs needed for editing)
+2. Text-editing task, OR continuation of an editing session visible above?
+   Editing keywords: fix, correct, proofread, improve, rewrite, rephrase,
+     translate, summarise, paraphrase, perbaiki, terjemahkan, ringkas, etc.
+   Continuation: if the recent conversation shows an editing session AND
+     the current message is plain text with no new question or topic,
+     treat it as more text to edit -> direct_answer.
+   IMPORTANT: a new SOP/policy question, even after many editing turns,
+     overrides editing context -> go to step 4.
+   YES -> direct_answer
 
-Step 2b. Does the request EXPLICITLY ask to generate/create/download a file,
-        OR ask for live data that requires an external source RIGHT NOW?
-        File generation: user says buat/create/generate/buatkan/download +
-          (laporan/Excel/Word/PDF/PowerPoint/rekap/tabel/dokumen)
-        Live external data: user asks for TODAY'S/CURRENT/TERBARU price,
-          exchange rate, stock quote, weather, or news — data that changes
-          daily and cannot be known without fetching it right now.
-        Email: read inbox / send email / reply to email
-        YES → action = agentic
-        ⚠ NOT agentic: math problems that GIVE you the prices/numbers
-          (e.g. "pensil seharga Rp2.000" — the price is given, not fetched).
-          NOT agentic: calculations, unit conversions, word problems with
-          numbers already stated in the question → these are direct_answer.
+3. Explicit file generation or live external data needed right now?
+   (buat laporan, create Excel, current USD rate, today's news, send email)
+   YES -> agentic
 
-Step 3. Is "User has a knowledge base: true" and the question about a
-        company-specific rule, person, threshold, SOP, or process that
-        cannot be answered correctly from general world knowledge alone?
-        (e.g. who approves, what is the limit, what is the SOP, who is PIC,
-         bagaimana prosedur, siapa yang berwenang, berapa batas pengadaan)
-        YES → action = rag_search
+4. Company-specific question that general knowledge cannot answer?
+   (who approves, what is the SOP, berapa batas pengadaan, siapa PIC,
+    bagaimana prosedur, what is the policy) — requires kb=true.
+   YES -> rag_search
 
-Step 4. Is "Has file attachments: true" and the query asks to analyse,
-        summarise, review, or extract from the attachment itself?
-        YES → action = direct_answer
+5. Everything else -> direct_answer
 
-Step 5. All other questions answerable from general world knowledge
-        → action = direct_answer
-
-Write your reasoning FIRST, then the action. The action must be consistent
-with your reasoning. Format:
-
-{{"reasoning": "<one sentence: which step matched and why>",
+Reasoning first, then JSON:
+{{"reasoning": "<one sentence>", \
 "action": "<action>", "confidence": <0.0-1.0>}}
-
 JSON:"""
+
+
+def _build_context_block(recent_messages: list[dict] | None) -> str:
+    """Format the last 4 messages into a readable context block."""
+    if not recent_messages:
+        return ""
+    turns = []
+    for m in recent_messages[-4:]:
+        role = m.get("role", "")
+        content = m.get("content", "")[:150].replace("\n", " ").strip()
+        if role in ("user", "assistant") and content:
+            label = "User" if role == "user" else "Assistant"
+            turns.append(f"{label}: {content}")
+    if not turns:
+        return ""
+    return "--- RECENT CONVERSATION ---\n" + "\n".join(turns) + "\n\n"
 
 
 class RouterService:
@@ -120,9 +118,6 @@ class RouterService:
     """
 
     def __init__(self) -> None:
-        # Routing, intent, and language detection are lightweight JSON tasks —
-        # run them on the small, fast router model (gemma3:1b) rather than the
-        # heavier agent model reserved for planning/content generation.
         self._llm = SmartLLM(
             ollama_model=settings.OLLAMA_ROUTER_MODEL, timeout=30.0
         )
@@ -142,10 +137,11 @@ class RouterService:
         log(
             f"attachments={has_attachments} "
             f"images={has_images} "
-            f"kb={has_knowledge_base}"
+            f"kb={has_knowledge_base} "
+            f"ctx={len(recent_messages) if recent_messages else 0}msgs"
         )
 
-        # Only hard-coded rule: image attached -> vision (always certain)
+        # Bypass 1: image -> vision (certain)
         if has_images:
             log("VISION (image attached)")
             log("=" * 50)
@@ -155,7 +151,7 @@ class RouterService:
                 reason="image_attached",
             )
 
-        # Hard-coded bypass: text editing / writing tasks never need RAG
+        # Bypass 2: unambiguous edit prefix -> direct, no LLM needed
         q_lower = query.strip().lower()
         if any(q_lower.startswith(p) for p in _EDIT_PREFIXES):
             log("DIRECT (text-editing bypass)")
@@ -166,53 +162,16 @@ class RouterService:
                 reason="text_editing_bypass",
             )
 
-        # Context-aware bypass: if ANY of the last 3 user turns was a
-        # text-editing request, and the current message looks like plain
-        # pasted text (no question mark, no question word), inherit editing
-        # intent. A single follow-up question resets context.
-        if recent_messages:
-            recent_user_msgs = [
-                m.get("content", "").strip().lower()
-                for m in recent_messages
-                if m.get("role") == "user"
-            ]
-            # Check last 3 user messages for any editing intent
-            any_edit_in_context = any(
-                any(msg.startswith(p) for p in _EDIT_PREFIXES)
-                for msg in recent_user_msgs[-3:]
-            )
-            # The most recent user message resets context if it's a question
-            last_user = recent_user_msgs[-1] if recent_user_msgs else ""
-            last_was_question = (
-                "?" in last_user
-                or any(last_user.startswith(w) for w in _QUESTION_WORDS)
-            )
-            is_plain_text = (
-                "?" not in q_lower
-                and not any(
-                    q_lower.startswith(w) for w in _QUESTION_WORDS
-                )
-                and len(q_lower) > 10
-            )
-            if any_edit_in_context and is_plain_text and not last_was_question:
-                log("DIRECT (editing intent inherited from context)")
-                log("=" * 50)
-                return RouterResult(
-                    action=RouterAction.DIRECT_ANSWER,
-                    confidence=0.95,
-                    reason="editing_intent_inherited",
-                )
-
-        # Hard-coded bypass: pure conversational / greeting messages
+        # Bypass 3: one-word greeting -> direct (certain)
         _GREETINGS = {
             "hi", "hello", "hey", "halo", "hai", "hei",
             "thanks", "thank you", "terima kasih", "makasih", "thx",
             "ok", "okay", "oke", "oks", "got it", "noted",
             "good morning", "good afternoon", "good evening",
-            "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
-            "bye", "goodbye", "sampai jumpa", "dadah",
+            "selamat pagi", "selamat siang", "selamat sore",
+            "selamat malam", "bye", "goodbye", "sampai jumpa", "dadah",
         }
-        if query.strip().lower().rstrip("!.,") in _GREETINGS:
+        if q_lower.rstrip("!.,") in _GREETINGS:
             log("DIRECT (greeting bypass)")
             log("=" * 50)
             return RouterResult(
@@ -221,9 +180,11 @@ class RouterService:
                 reason="greeting_bypass",
             )
 
-        # LLM classification
+        # LLM classification with conversation context
+        context_block = _build_context_block(recent_messages)
         prompt = _PROMPT.format(
-            query=query[:600],
+            context_block=context_block,
+            query=query[:500],
             has_attachments=str(has_attachments).lower(),
             has_images=str(has_images).lower(),
             has_knowledge_base=str(has_knowledge_base).lower(),
@@ -233,17 +194,14 @@ class RouterService:
             raw = await self._llm.complete(prompt, _SYSTEM)
             result = self._parse(raw)
 
-            # Safety override: when user has a knowledge base, only allow
-            # agentic if the model is very confident (≥0.85). Otherwise
-            # prefer rag_search — it's safer to search internal docs than
-            # accidentally hitting the web for an internal policy question.
+            # Safety: KB present + low-confidence agentic -> rag_search
             if (
                 has_knowledge_base
                 and result.action == RouterAction.AGENTIC
                 and result.confidence < 0.85
             ):
                 log(
-                    f"Override: agentic({result.confidence:.0%}) → "
+                    f"Override: agentic({result.confidence:.0%}) -> "
                     "rag_search (kb present, low confidence)"
                 )
                 result = RouterResult(
@@ -252,11 +210,7 @@ class RouterService:
                     reason="kb_safety_override",
                 )
 
-            # Safety override: attachment present and model chose rag_search
-            # with low confidence. Small models default to rag_search when a
-            # KB exists even when the query is about the attachment itself.
-            # Require ≥0.88 confidence to actually run RAG with an attachment;
-            # below that, trust the attachment and answer directly.
+            # Safety: attachment + low-confidence rag -> direct
             if (
                 has_attachments
                 and not has_images
@@ -264,8 +218,8 @@ class RouterService:
                 and result.confidence < 0.88
             ):
                 log(
-                    f"Override: rag_search({result.confidence:.0%}) → "
-                    "direct_answer (attachment present, confidence < 0.88)"
+                    f"Override: rag_search({result.confidence:.0%}) -> "
+                    "direct_answer (attachment, low confidence)"
                 )
                 result = RouterResult(
                     action=RouterAction.DIRECT_ANSWER,
@@ -326,8 +280,6 @@ class RouterService:
         )
 
     def _from_dict(self, d: dict) -> RouterResult:
-        # reasoning comes before action in the JSON so the model
-        # commits to its logic before picking the label
         reason = str(d.get("reasoning", d.get("reason", "")))
 
         action_str = str(d.get("action", "")).lower().strip()
@@ -351,14 +303,7 @@ class RouterService:
         )
 
     async def detect_and_translate(self, query: str) -> tuple[str, str]:
-        """
-        Detect language and return (lang_code, query_for_routing).
-
-        Claude/OpenAI understand multilingual natively, so we pass the
-        original text unchanged to classify().  For Ollama we still
-        translate so the smaller model routes correctly.
-        """
-        # Rule-based detection (fast, no LLM)
+        """Detect language and return (lang_code, query_for_routing)."""
         _ID_MARKERS = {
             "yang", "dan", "di", "ke", "dari", "dengan", "untuk", "pada",
             "ini", "itu", "saya", "anda", "kamu", "ada", "tidak", "bisa",
@@ -372,14 +317,12 @@ class RouterService:
         if not is_indonesian:
             return "en", query
 
-        # Cloud LLMs understand Indonesian natively — no translation needed
         if self._llm.provider in ("claude", "openai"):
             return "id", query
 
-        # Ollama fallback: translate so smaller model routes correctly
         prompt = (
-            f"Translate this to English. "
-            f"Output only the English translation, nothing else."
+            "Translate this to English. "
+            "Output only the English translation, nothing else."
             f"\n\n{query[:300]}"
         )
         try:
@@ -399,9 +342,7 @@ class RouterService:
         import httpx
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(
-                    f"{self._llm._ollama_url}/api/tags"
-                )
+                r = await client.get(f"{self._llm._ollama_url}/api/tags")
                 return r.status_code == 200
         except Exception:
             return False
