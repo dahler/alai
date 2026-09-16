@@ -461,6 +461,14 @@ async def send_message_stream(
     )
     has_knowledge_base = (kb_count_result.scalar() or 0) > 0
 
+    # Load recent history once — used by routing AND query rewriting below.
+    pre_history = await msg_service.get_recent_context(
+        conversation_id, limit=6
+    )
+    pre_history_dicts = [
+        {"role": m.role, "content": m.content} for m in pre_history
+    ]
+
     # Language detection + routing
     log("-" * 60)
     log("LANGUAGE DETECTION & ROUTING")
@@ -478,6 +486,7 @@ async def send_message_stream(
         has_attachments=len(data.attachment_ids) > 0,
         has_images=len(image_paths) > 0,
         has_knowledge_base=has_knowledge_base,
+        recent_messages=pre_history_dicts,
     )
     log(
         f"Router decision: {router_result.action.value} "
@@ -495,12 +504,9 @@ async def send_message_stream(
     # still sees and answers the original question.
     search_query = data.content
     if do_rag:
-        prev_history = await msg_service.get_recent_context(
-            conversation_id, limit=6
-        )
-        context_for_rewrite = [
-            {"role": m.role, "content": m.content} for m in prev_history
-        ] + [{"role": "user", "content": data.content}]
+        context_for_rewrite = pre_history_dicts + [
+            {"role": "user", "content": data.content}
+        ]
         search_query = await ai_service.rewrite_query(
             data.content, context_for_rewrite
         )

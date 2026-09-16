@@ -29,6 +29,24 @@ _SYSTEM = (
     "Respond ONLY with a valid JSON object — no markdown, no explanation."
 )
 
+_EDIT_PREFIXES = (
+    "fix ", "fix:", "correct ", "proofread ", "improve ",
+    "rewrite ", "rephrase ", "translate ", "paraphrase ",
+    "paraphrase:", "summarise ", "summarize ", "shorten ",
+    "lengthen ", "make this ", "make it ", "check grammar",
+    "perbaiki ", "terjemahkan ", "ringkas ", "ubah ke ",
+    "tolong perbaiki", "in english please", "please translate",
+    "please fix", "please correct", "please improve",
+)
+
+_QUESTION_WORDS = (
+    "what ", "how ", "who ", "when ", "where ", "why ",
+    "is ", "are ", "can ", "could ", "would ", "should ",
+    "apa ", "bagaimana ", "siapa ", "kapan ", "di mana ",
+    "berapa ", "apakah ", "bisakah ", "tolong cari", "cari ",
+    "does ", "do ", "did ", "has ", "have ", "which ",
+)
+
 _PROMPT = """\
 You are a request router. Pick exactly one action for the user request.
 
@@ -115,6 +133,7 @@ class RouterService:
         has_attachments: bool = False,
         has_images: bool = False,
         has_knowledge_base: bool = False,
+        recent_messages: list[dict] | None = None,
     ) -> RouterResult:
         start = time.time()
         log("=" * 50)
@@ -137,15 +156,6 @@ class RouterService:
             )
 
         # Hard-coded bypass: text editing / writing tasks never need RAG
-        _EDIT_PREFIXES = (
-            "fix ", "fix:", "correct ", "proofread ", "improve ",
-            "rewrite ", "rephrase ", "translate ", "paraphrase ",
-            "paraphrase:", "summarise ", "summarize ", "shorten ",
-            "lengthen ", "make this ", "make it ", "check grammar",
-            "perbaiki ", "terjemahkan ", "ringkas ", "ubah ke ",
-            "tolong perbaiki", "in english please", "please translate",
-            "please fix", "please correct", "please improve",
-        )
         q_lower = query.strip().lower()
         if any(q_lower.startswith(p) for p in _EDIT_PREFIXES):
             log("DIRECT (text-editing bypass)")
@@ -155,6 +165,37 @@ class RouterService:
                 confidence=0.99,
                 reason="text_editing_bypass",
             )
+
+        # Context-aware bypass: if the previous user turn was a text-editing
+        # request and the current message looks like plain pasted text (no
+        # question mark, no question word, no action verb), inherit the intent.
+        if recent_messages:
+            prev_user = next(
+                (
+                    m.get("content", "").strip().lower()
+                    for m in reversed(recent_messages)
+                    if m.get("role") == "user"
+                ),
+                "",
+            )
+            last_was_edit = any(
+                prev_user.startswith(p) for p in _EDIT_PREFIXES
+            )
+            is_plain_text = (
+                "?" not in q_lower
+                and not any(
+                    q_lower.startswith(w) for w in _QUESTION_WORDS
+                )
+                and len(q_lower) > 10
+            )
+            if last_was_edit and is_plain_text:
+                log("DIRECT (editing intent inherited from context)")
+                log("=" * 50)
+                return RouterResult(
+                    action=RouterAction.DIRECT_ANSWER,
+                    confidence=0.95,
+                    reason="editing_intent_inherited",
+                )
 
         # Hard-coded bypass: pure conversational / greeting messages
         _GREETINGS = {
