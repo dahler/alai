@@ -17,9 +17,12 @@ Retrieval pipeline:
   5. Expand context with neighbouring chunks
 """
 
+import hashlib
+import json
 import re
 import time
 from typing import Optional
+from cachetools import TTLCache
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, or_, and_, tuple_, func, literal
 
@@ -32,6 +35,22 @@ from app.models.document_connection import DocumentConnection
 from app.services.embedding import EmbeddingService
 from app.services.docling_service import DoclingService, ParsedSection
 from app.services.summarization_service import SummarizationService
+
+
+# 5-minute TTL, max 256 distinct (query, user_id, top_k, source_filter) combos
+_search_cache: TTLCache = TTLCache(maxsize=256, ttl=300)
+
+
+def _cache_key(
+    query: str,
+    user_id: Optional[int],
+    top_k: int,
+    source_filter: Optional[str],
+) -> str:
+    payload = json.dumps(
+        [query, user_id, top_k, source_filter], sort_keys=True
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def log(message: str) -> None:
@@ -355,7 +374,7 @@ class RAGService:
         source_filter: Optional[str] = None,
     ) -> list[dict]:
         """
-        Section-first hybrid retrieval.
+        Section-first hybrid retrieval with 5-minute in-memory TTL cache.
 
         Steps:
           1. Embed query
@@ -365,6 +384,12 @@ class RAGService:
           5. Expand with neighbouring chunks
         """
         top_k = top_k or self.top_k
+        cache_key = _cache_key(query, user_id, top_k, source_filter)
+        cached = _search_cache.get(cache_key)
+        if cached is not None:
+            log(f"SEARCH cache hit: {query[:60]}")
+            return cached
+
         log(f"SEARCH: {query[:80]}")
 
         query_emb = await self.embedding.embed_text(query)
@@ -567,6 +592,7 @@ class RAGService:
             query_emb, results, user_id, top_k
         )
 
+        _search_cache[cache_key] = results
         return results
 
     # ==================================================================
@@ -1323,3 +1349,45 @@ def _attachment_to_dict(att: Attachment) -> dict:
         "version": att.version,
         "folder_id": att.folder_id,
     }
+
+
+async def embed_document_background(
+    attachment_id: int,
+    user_id: int,
+    is_company_doc: bool,
+) -> None:
+    """
+    Background task: run Phase 1 (parse → sections → chunks → embeddings)
+    for a single document after the upload response has been returned.
+    Creates its own DB session so it outlives the request.
+    """
+    from app.database import async_session_maker
+
+    async with async_session_maker() as db:
+        result = await db.execute(
+            select(Attachment).where(Attachment.id == attachment_id)
+        )
+        attachment = result.scalar_one_or_none()
+        if not attachment:
+            return
+
+        try:
+            rag = RAGService(db)
+            stats = await rag.embed_document(
+                attachment_id=attachment_id,
+                user_id=user_id,
+                is_company_doc=is_company_doc,
+            )
+            if "error" in stats:
+                attachment.processing_status = "error"
+                await db.commit()
+        except Exception as exc:
+            print(
+                f"[EMBED BG] attachment {attachment_id} failed: {exc}",
+                flush=True,
+            )
+            try:
+                attachment.processing_status = "error"
+                await db.commit()
+            except Exception:
+                pass

@@ -7,13 +7,13 @@ Only company-scoped documents are searched; no user session is required.
 Tool definition to pass to the Claude API:
   {
     "name": "search_documents",
-    "description": "Search the company knowledge base for relevant information.",
+    "description": "Search the company knowledge base.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "query":       {"type": "string",  "description": "Natural-language search query"},
-        "top_k":       {"type": "integer", "description": "Results to return (1-20, default 5)"},
-        "source_filter": {"type": "string", "description": "Optional filename substring filter"}
+        "query": {"type": "string", "description": "Search query"},
+        "top_k": {"type": "integer", "description": "Results (1-20)"},
+        "source_filter": {"type": "string", "description": "Filename filter"}
       },
       "required": ["query"]
     }
@@ -25,15 +25,17 @@ Call: POST https://<host>/api/rag/query
       {"query": "...", "top_k": 5}
 """
 
+import secrets
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+from app.limiter import limiter
 from app.services.rag import RAGService
 
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -49,7 +51,8 @@ async def _require_api_key(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="RAG_API_KEY is not configured on this server",
         )
-    if not credentials or credentials.credentials != settings.RAG_API_KEY:
+    token = credentials.credentials if credentials else ""
+    if not secrets.compare_digest(token, settings.RAG_API_KEY):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",
@@ -57,14 +60,22 @@ async def _require_api_key(
         )
 
 
-# ── Request / Response schemas ────────────────────────────────────────────────
+# ── Request / Response schemas ────────────────────────────────────────────
+
 
 class QueryRequest(BaseModel):
-    query: str = Field(..., description="Natural-language search query")
-    top_k: int = Field(5, ge=1, le=20, description="Number of results to return (1–20)")
+    query: str = Field(
+        ...,
+        max_length=4096,
+        description="Natural-language search query",
+    )
+    top_k: int = Field(
+        5, ge=1, le=20, description="Number of results to return (1-20)"
+    )
     source_filter: Optional[str] = Field(
         None,
-        description="Restrict to documents whose filename contains this string",
+        max_length=256,
+        description="Restrict to documents whose filename contains this",
     )
 
 
@@ -83,7 +94,8 @@ class QueryResponse(BaseModel):
     results: list[ResultItem]
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Endpoint ──────────────────────────────────────────────────────────────
+
 
 @router.post(
     "/query",
@@ -91,12 +103,14 @@ class QueryResponse(BaseModel):
     dependencies=[Depends(_require_api_key)],
     summary="Search the company knowledge base",
     description=(
-        "Returns the top-K most relevant document chunks for a natural-language query. "
+        "Returns the top-K most relevant document chunks for a query. "
         "Only company-scoped documents are searched. "
         "Authenticate with `Authorization: Bearer <RAG_API_KEY>`."
     ),
 )
+@limiter.limit("60/minute")
 async def query_rag(
+    request: Request,
     body: QueryRequest,
     db: AsyncSession = Depends(get_db),
 ) -> QueryResponse:
@@ -133,4 +147,6 @@ async def query_rag(
             relevance_score=chunk.get("similarity", 0.0),
         ))
 
-    return QueryResponse(query=body.query, total=len(results), results=results)
+    return QueryResponse(
+        query=body.query, total=len(results), results=results
+    )

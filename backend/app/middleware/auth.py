@@ -11,18 +11,30 @@ from app.config import settings
 security = HTTPBearer(auto_error=False)
 
 
+def _extract_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str | None:
+    """Return JWT from Authorization header or auth_token cookie."""
+    if credentials:
+        return credentials.credentials
+    return request.cookies.get("auth_token")
+
+
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    if not credentials:
+    token = _extract_token(request, credentials)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
     auth_service = AuthService(db)
-    user_id = auth_service.verify_token(credentials.credentials)
+    user_id = auth_service.verify_token(token)
 
     if not user_id:
         raise HTTPException(
@@ -41,14 +53,16 @@ async def get_current_user(
 
 
 async def get_optional_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> User | None:
-    if not credentials:
+    token = _extract_token(request, credentials)
+    if not token:
         return None
 
     auth_service = AuthService(db)
-    user_id = auth_service.verify_token(credentials.credentials)
+    user_id = auth_service.verify_token(token)
 
     if not user_id:
         return None

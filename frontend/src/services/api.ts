@@ -7,16 +7,7 @@ export const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  withCredentials: true,
-})
-
-// Request interceptor to add auth token
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+  withCredentials: true, // sends the auth_token httponly cookie automatically
 })
 
 // Registered by the router once it mounts — lets the axios interceptor
@@ -26,12 +17,20 @@ export function registerNavigate(fn: (path: string) => void) {
   _navigate = fn
 }
 
+/** Navigate programmatically; falls back to hard reload if router not ready. */
+export function navigateTo(path: string): void {
+  if (_navigate) {
+    _navigate(path)
+  } else {
+    window.location.href = path
+  }
+}
+
 // Response interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('token')
       if (_navigate) {
         _navigate('/')
       } else {
@@ -41,11 +40,3 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
-
-export const setAuthToken = (token: string | null) => {
-  if (token) {
-    localStorage.setItem('token', token)
-  } else {
-    localStorage.removeItem('token')
-  }
-}

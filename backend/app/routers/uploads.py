@@ -1,11 +1,12 @@
 import io
 import zipfile
-from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request, status, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
+from app.limiter import limiter
 from app.services.storage import StorageService
 from app.models.attachment import Attachment
 from app.schemas.attachment import UploadResponse
@@ -16,7 +17,9 @@ storage_service = StorageService()
 
 
 @router.post("", response_model=UploadResponse)
+@limiter.limit("20/minute")
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -25,7 +28,10 @@ async def upload_file(
     if len(content) > settings.MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File too large. Maximum size is {settings.MAX_FILE_SIZE // (1024*1024)}MB",
+            detail=(
+            f"File too large. Maximum size is "
+            f"{settings.MAX_FILE_SIZE // (1024 * 1024)}MB"
+        ),
         )
 
     # Reset file position
@@ -66,7 +72,13 @@ async def upload_file(
 
 @router.get("/{filename}")
 async def get_file(filename: str, db: AsyncSession = Depends(get_db)):
-    file_path = storage_service.get_file_path(filename)
+    try:
+        file_path = storage_service.get_file_path(filename)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename",
+        )
 
     if not file_path.exists():
         raise HTTPException(
@@ -74,10 +86,14 @@ async def get_file(filename: str, db: AsyncSession = Depends(get_db)):
             detail="File not found",
         )
 
-    result = await db.execute(select(Attachment).where(Attachment.filename == filename))
+    result = await db.execute(
+        select(Attachment).where(Attachment.filename == filename)
+    )
     attachment = result.scalar_one_or_none()
 
-    content_type = attachment.content_type if attachment else "application/octet-stream"
+    content_type = (
+        attachment.content_type if attachment else "application/octet-stream"
+    )
     original_name = attachment.original_filename if attachment else filename
 
     return FileResponse(
@@ -132,7 +148,9 @@ async def list_all_files(db: AsyncSession = Depends(get_db)):
             "file_size": att.file_size,
             "url": f"/api/uploads/{att.filename}",
             "is_image": att.content_type.startswith("image/"),
-            "created_at": att.created_at.isoformat() if att.created_at else None,
+            "created_at": (
+                att.created_at.isoformat() if att.created_at else None
+            ),
         }
         for att in attachments
     ]

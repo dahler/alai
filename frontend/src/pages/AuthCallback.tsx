@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Loading } from '../components/common/Loading'
-import { authService } from '../services/auth'
 import { useAuthStore } from '../store/authStore'
 
 export default function AuthCallback() {
@@ -11,20 +10,18 @@ export default function AuthCallback() {
   const checkAuth = useAuthStore((state) => state.checkAuth)
 
   useEffect(() => {
-    const token = searchParams.get('token')
     const errorCode = searchParams.get('error')
-    const errorDescription = searchParams.get('error_description')
 
-    if (token) {
-      authService.setToken(token)
-      checkAuth().then(() => {
-        navigate('/')
-      })
-    } else if (errorCode) {
-      setError(errorDescription || errorCode)
-    } else {
-      setError('No authentication token received')
+    if (errorCode) {
+      setError(errorCode)
+      return
     }
+
+    // The JWT is now in an httponly cookie set by the backend redirect.
+    // Just verify the session and navigate home.
+    checkAuth().then(() => {
+      navigate('/')
+    })
   }, [searchParams, navigate, checkAuth])
 
   if (error) {

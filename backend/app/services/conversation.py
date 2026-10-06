@@ -56,5 +56,11 @@ class ConversationService:
         if user and conversation.user_id == user.id:
             return True
         if session_id and conversation.anonymous_session_id == session_id:
+            # Migrate the anonymous conversation to the authenticated user
+            # so it remains accessible after the session cookie expires.
+            if user and not conversation.user_id:
+                conversation.user_id = user.id
+                conversation.anonymous_session_id = None
+                await self.db.commit()
             return True
         return False

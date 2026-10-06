@@ -22,7 +22,7 @@ async def list_conversations(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     service = ConversationService(db)
     return await service.get_user_conversations(user, session_id)
 
@@ -35,7 +35,7 @@ async def create_conversation(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     service = ConversationService(db)
     return await service.create(
         user=user,
@@ -52,7 +52,7 @@ async def get_conversation(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     service = ConversationService(db)
 
     conversation = await service.get_with_messages(conversation_id)
@@ -80,7 +80,7 @@ async def update_conversation(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     service = ConversationService(db)
 
     conversation = await service.get_by_id(conversation_id)
@@ -108,7 +108,7 @@ async def delete_conversation(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     service = ConversationService(db)
 
     conversation = await service.get_by_id(conversation_id)

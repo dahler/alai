@@ -39,8 +39,11 @@ class StorageService:
         }
 
     def get_file_path(self, filename: str) -> Path:
-        """Get full path to a file"""
-        return self.upload_dir / filename
+        """Get full path to a file, rejecting traversal outside upload dir."""
+        resolved = (self.upload_dir / filename).resolve()
+        if not resolved.is_relative_to(self.upload_dir):
+            raise ValueError(f"Invalid filename: {filename!r}")
+        return resolved
 
     def delete_file(self, filename: str) -> bool:
         """Delete a file"""

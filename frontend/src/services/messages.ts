@@ -1,4 +1,4 @@
-import { api } from './api'
+import { api, navigateTo } from './api'
 import type { Message, Source } from '../types/chat'
 
 const API_URL = import.meta.env.VITE_API_URL || ''
@@ -33,26 +33,22 @@ export const messagesService = {
     onSources?: (sources: Source[]) => void,
     onProcess?: (text: string) => void
   ): Promise<void> {
-    const token = localStorage.getItem('token')
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-    }
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`
-    }
-
     try {
       const response = await fetch(
         `${API_URL}/api/conversations/${conversationId}/messages/stream`,
         {
           method: 'POST',
-          headers,
+          headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({ content, attachment_ids: attachmentIds }),
         }
       )
 
       if (!response.ok) {
+        if (response.status === 401) {
+          navigateTo('/')
+          return
+        }
         throw new Error(`HTTP error! status: ${response.status}`)
       }
 

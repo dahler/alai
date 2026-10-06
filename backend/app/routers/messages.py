@@ -228,7 +228,7 @@ async def get_messages(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     conv_service = ConversationService(db)
 
     conversation = await conv_service.get_by_id(conversation_id)
@@ -264,7 +264,7 @@ async def send_message(
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     conv_service = ConversationService(db)
     msg_service = MessageService(db)
 
@@ -316,7 +316,7 @@ async def send_message_stream(
     log(f"User message: {preview}")
     log(f"Attachments: {len(data.attachment_ids)} file(s)")
 
-    session_id = get_session_id(request, response) if not user else None
+    session_id = get_session_id(request, response)
     conv_service = ConversationService(db)
     msg_service = MessageService(db)
     ai_service = AIService()
@@ -331,7 +331,21 @@ async def send_message_stream(
         )
 
     if not await conv_service.can_access(conversation, user, session_id):
-        log("Access denied!")
+        log(
+            f"Access denied! "
+            f"conv.user_id={conversation.user_id!r} "
+            f"req.user_id={user.id if user else None!r} "
+            f"conv.anon_session={conversation.anonymous_session_id!r} "
+            f"req.session_id={session_id!r}"
+        )
+        # Unauthenticated request hitting a protected conversation → 401
+        # so the frontend interceptor redirects to login.
+        # Authenticated but wrong user → 403.
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated",
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",

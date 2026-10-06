@@ -20,7 +20,7 @@ from app.models.document_chunk import DocumentChunk
 from app.models.document_section import DocumentSection
 from app.models.document_folder import DocumentFolder
 from app.models.document_connection import DocumentConnection
-from app.services.rag import RAGService
+from app.services.rag import RAGService, embed_document_background
 from app.services.docling_service import DoclingService
 from app.services.knowledge_graph import (
     KnowledgeGraphService,
@@ -207,24 +207,15 @@ async def upload_document(
     await db.commit()
     await db.refresh(attachment)
 
-    # Phase 1 (sync): Docling ingestion pipeline
-    rag = RAGService(db)
-    stats = await rag.embed_document(
-        attachment_id=attachment.id,
-        user_id=user.id,
-        is_company_doc=is_company_doc,
+    # Phase 1 (async background): parse → sections → chunks → embeddings
+    background_tasks.add_task(
+        embed_document_background,
+        attachment.id,
+        user.id,
+        is_company_doc,
     )
 
-    if "error" in stats:
-        storage_service.delete_file(attachment.filename)
-        await db.delete(attachment)
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process document: {stats['error']}",
-        )
-
-    # Phase 2 (async): graph extraction (disabled via ENABLE_KNOWLEDGE_GRAPH flag)
+    # Phase 2 (async background): graph extraction
     if extract_graph and settings.ENABLE_KNOWLEDGE_GRAPH:
         background_tasks.add_task(extract_graph_background, attachment.id)
 
@@ -236,16 +227,7 @@ async def upload_document(
         "is_company_doc": is_company_doc,
         "graph_status": attachment.graph_status,
         "processing_status": attachment.processing_status,
-        "message": (
-            "Document uploaded. Knowledge graph extraction running in background."  # noqa: E501
-            if extract_graph
-            else "Document uploaded and processed successfully."
-        ),
-        "stats": {
-            "sections_created": stats.get("sections_created", 0),
-            "chunks_created": stats.get("chunks_created", 0),
-            "processing_time": round(stats.get("processing_time", 0), 2),
-        },
+        "message": "Document uploaded. Processing in background.",
     }
 
 

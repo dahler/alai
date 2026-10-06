@@ -22,12 +22,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   checkAuth: async () => {
     set({ isLoading: true })
     try {
-      if (authService.isAuthenticated()) {
-        const user = await authService.getCurrentUser()
-        set({ user, isAuthenticated: !!user, isLoading: false })
-      } else {
-        set({ user: null, isAuthenticated: false, isLoading: false })
-      }
+      // Cookie is sent automatically; no localStorage check needed.
+      const user = await authService.getCurrentUser()
+      set({ user, isAuthenticated: !!user, isLoading: false })
     } catch {
       set({ user: null, isAuthenticated: false, isLoading: false })
     }
@@ -37,7 +34,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const authUrl = await authService.getLoginUrl()
       window.location.href = authUrl
-    } catch (error) {
+    } catch {
       set({ error: 'Failed to initiate login' })
     }
   },

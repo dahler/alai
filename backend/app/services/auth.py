@@ -88,7 +88,7 @@ class AuthService:
 
         print(f"[AUTH] Token exchange → redirect_uri={settings.MICROSOFT_REDIRECT_URI} verifier_len={len(code_verifier)}", flush=True)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(token_url, data=data)
             if not response.is_success:
                 print(f"[AUTH] Token exchange {response.status_code}: {response.text}", flush=True)
@@ -96,7 +96,7 @@ class AuthService:
             return response.json()
 
     async def get_microsoft_user_info(self, access_token: str) -> MicrosoftUserInfo:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
                 "https://graph.microsoft.com/v1.0/me",
                 headers={"Authorization": f"Bearer {access_token}"},

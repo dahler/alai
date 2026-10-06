@@ -1,4 +1,4 @@
-import { api, setAuthToken } from './api'
+import { api } from './api'
 import type { User } from '../types/auth'
 
 export const authService = {
@@ -17,22 +17,6 @@ export const authService = {
   },
 
   async logout(): Promise<void> {
-    try {
-      await api.post('/auth/logout')
-    } finally {
-      setAuthToken(null)
-    }
-  },
-
-  setToken(token: string): void {
-    setAuthToken(token)
-  },
-
-  getToken(): string | null {
-    return localStorage.getItem('token')
-  },
-
-  isAuthenticated(): boolean {
-    return !!this.getToken()
+    await api.post('/auth/logout')
   },
 }

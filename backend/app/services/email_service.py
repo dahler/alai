@@ -77,7 +77,7 @@ class EmailService:
         return account.access_token
 
     async def _refresh_token(self, refresh_token: str) -> Dict[str, Any]:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 TOKEN_URL,
                 data={
