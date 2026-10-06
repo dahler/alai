@@ -372,27 +372,38 @@ class RAGService:
         user_id: Optional[int] = None,
         top_k: Optional[int] = None,
         source_filter: Optional[str] = None,
+        query_embedding: Optional[list[float]] = None,
+        document_ids: Optional[list[int]] = None,
     ) -> list[dict]:
         """
         Section-first hybrid retrieval with 5-minute in-memory TTL cache.
 
         Steps:
-          1. Embed query
+          1. Embed query (or use pre-computed query_embedding, e.g. HyDE)
           2. Find top sections by summary embedding similarity
           3. Search chunks within those sections (vector)
           4. BM25 re-rank
           5. Expand with neighbouring chunks
+
+        query_embedding: pass a pre-computed embedding to skip step 1.
+            The query string is still used for BM25/trigram keyword scoring.
+        document_ids: if set, restrict retrieval to these attachment IDs
+            (graph expansion).
         """
         top_k = top_k or self.top_k
         cache_key = _cache_key(query, user_id, top_k, source_filter)
-        cached = _search_cache.get(cache_key)
-        if cached is not None:
-            log(f"SEARCH cache hit: {query[:60]}")
-            return cached
+        if query_embedding is None and document_ids is None:
+            cached = _search_cache.get(cache_key)
+            if cached is not None:
+                log(f"SEARCH cache hit: {query[:60]}")
+                return cached
 
         log(f"SEARCH: {query[:80]}")
 
-        query_emb = await self.embedding.embed_text(query)
+        query_emb = (
+            query_embedding
+            or await self.embedding.embed_text(query)
+        )
         if not query_emb:
             log("✗ Failed to embed query")
             return []
@@ -429,6 +440,10 @@ class RAGService:
         if source_filter:
             section_q = section_q.where(
                 Attachment.original_filename.ilike(f"%{source_filter}%")
+            )
+        if document_ids:
+            section_q = section_q.where(
+                DocumentSection.attachment_id.in_(document_ids)
             )
         sec_rows = (await self.db.execute(section_q)).all()
         relevant_section_ids = [r.id for r in sec_rows]
@@ -479,6 +494,10 @@ class RAGService:
         if source_filter:
             chunk_q = chunk_q.where(
                 Attachment.original_filename.ilike(f"%{source_filter}%")
+            )
+        if document_ids:
+            chunk_q = chunk_q.where(
+                DocumentChunk.attachment_id.in_(document_ids)
             )
 
         # Trigram pre-filter: any keyword must have word_similarity > 0.1.
@@ -592,7 +611,8 @@ class RAGService:
             query_emb, results, user_id, top_k
         )
 
-        _search_cache[cache_key] = results
+        if query_embedding is None and document_ids is None:
+            _search_cache[cache_key] = results
         return results
 
     # ==================================================================

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re as _re
 import time
@@ -7,7 +8,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
@@ -17,7 +18,6 @@ from app.services.message import MessageService
 from app.services.ai import AIService
 from app.services.document import DocumentService
 from app.services.rag import RAGService
-from app.services.knowledge_graph import KnowledgeGraphService
 from app.router.service import RouterService
 from app.router.constants import RouterAction
 from app.middleware.auth import get_optional_user, get_session_id
@@ -27,6 +27,80 @@ from app.models.message import Message
 from app.models.attachment import Attachment
 from app.models.attachment_chunk import AttachmentChunk
 from app.agent.pipeline import AgentPipeline as AgentLoop
+from app.models.entity import Entity
+from app.models.document_entity import DocumentEntity
+from app.models.relationship import EntityRelationship
+
+
+def _rrf_fuse(
+    result_lists: list[list[dict]],
+    k: int = 60,
+    top_n: int = 8,
+) -> list[dict]:
+    """Reciprocal Rank Fusion across multiple ranked result lists."""
+    scores: dict[int, float] = {}
+    by_id: dict[int, dict] = {}
+    for results in result_lists:
+        for rank, result in enumerate(results):
+            cid = result.get("chunk_id")
+            if cid is None:
+                continue
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank + 1)
+            if cid not in by_id:
+                by_id[cid] = result
+    sorted_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
+    return [by_id[cid] for cid in sorted_ids[:top_n]]
+
+
+async def _graph_expand_docs(
+    query: str,
+    db,
+    user_id,
+) -> set[int]:
+    """Fast keyword-based entity match + 1-hop graph traversal.
+
+    No LLM call — pure DB ILIKE against entity names.
+    Returns attachment IDs of documents that share entities with the query.
+    """
+    words = [
+        w.strip(".,;:()[]\"'")
+        for w in query.lower().split()
+        if len(w.strip(".,;:()[]\"'")) > 3
+    ]
+    if not words:
+        return set()
+
+    conds = [Entity.normalized_name.ilike(f"%{w}%") for w in words[:10]]
+    res = await db.execute(
+        select(Entity.id).where(or_(*conds)).limit(30)
+    )
+    entity_ids = {row[0] for row in res.all()}
+    if not entity_ids:
+        return set()
+
+    # 1-hop: follow all edges from/to matched entities
+    rel_res = await db.execute(
+        select(
+            EntityRelationship.source_entity_id,
+            EntityRelationship.target_entity_id,
+        ).where(
+            or_(
+                EntityRelationship.source_entity_id.in_(entity_ids),
+                EntityRelationship.target_entity_id.in_(entity_ids),
+            )
+        ).limit(100)
+    )
+    for src, tgt in rel_res.all():
+        entity_ids.add(src)
+        entity_ids.add(tgt)
+
+    doc_res = await db.execute(
+        select(DocumentEntity.document_id)
+        .where(DocumentEntity.entity_id.in_(entity_ids))
+        .distinct()
+    )
+    return {row[0] for row in doc_res.all()}
+
 
 router = APIRouter(
     prefix="/conversations/{conversation_id}/messages",
@@ -539,80 +613,180 @@ async def send_message_stream(
         log("-" * 60)
 
         if settings.ENABLE_KNOWLEDGE_GRAPH:
-            kg_service = KnowledgeGraphService(db)
-            hybrid_results = await kg_service.hybrid_search(
-                query=search_query,
-                user_id=user.id if user else None,
-                top_k=5,
-                vector_weight=0.6,
-                graph_weight=0.4,
+            # Combined: graph entity expansion + HyDE + multi-query RRF.
+            rag_service = RAGService(db)
+            uid = user.id if user else None
+            context_for_enhance = pre_history_dicts + [
+                {"role": "user", "content": data.content}
+            ]
+
+            # Step 1: fast graph entity expansion — no LLM, pure DB match
+            graph_doc_ids = await _graph_expand_docs(search_query, db, uid)
+            log(f"Graph expanded: {len(graph_doc_ids)} related doc(s)")
+
+            # Step 2: HyDE doc + query variants (concurrent)
+            hyde_doc, query_variants = await asyncio.gather(
+                ai_service.generate_hyde_document(
+                    data.content, context_for_enhance
+                ),
+                ai_service.generate_query_variants(
+                    data.content, context_for_enhance
+                ),
             )
-            if hybrid_results:
-                seen_doc_ids: set[int] = set()
-                for r in hybrid_results:
-                    if r.document_id not in seen_doc_ids:
-                        seen_doc_ids.add(r.document_id)
+            log(f"HyDE doc : {hyde_doc[:80]}…")
+            log(f"Variants : {query_variants}")
+
+            # Embed HyDE document
+            hyde_emb: list[float] | None = None
+            if hyde_doc:
+                hyde_emb = await rag_service.embedding.embed_text(hyde_doc)
+
+            # Step 3: searches on ALL documents
+            search_coros: list = [
+                rag_service.search(query=search_query, user_id=uid),
+                *[
+                    rag_service.search(query=v, user_id=uid)
+                    for v in query_variants
+                ],
+            ]
+            if hyde_emb:
+                search_coros.append(
+                    rag_service.search(
+                        query=data.content,
+                        user_id=uid,
+                        query_embedding=hyde_emb,
+                    )
+                )
+
+            # Step 4: graph-scoped searches give cross-doc chunks a second pass
+            if graph_doc_ids:
+                graph_ids_list = list(graph_doc_ids)
+                search_coros.append(
+                    rag_service.search(
+                        query=search_query,
+                        user_id=uid,
+                        document_ids=graph_ids_list,
+                    )
+                )
+                if query_variants:
+                    search_coros.append(
+                        rag_service.search(
+                            query=query_variants[0],
+                            user_id=uid,
+                            document_ids=graph_ids_list,
+                        )
+                    )
+
+            all_result_lists = await asyncio.gather(*search_coros)
+            log(
+                f"Ran {len(all_result_lists)} searches — "
+                f"counts: {[len(r) for r in all_result_lists]}"
+            )
+
+            # Step 5: RRF fusion across all result sets
+            rag_results = _rrf_fuse(list(all_result_lists))
+
+            if graph_doc_ids:
+                graph_hits = sum(
+                    1 for r in rag_results
+                    if r.get("attachment_id") in graph_doc_ids
+                )
+                log(
+                    f"Cross-doc: {graph_hits}/{len(rag_results)} results "
+                    f"from graph-expanded docs"
+                )
+
+            if rag_results:
+                seen_doc_ids_kg: set[int] = set()
+                for r in rag_results:
+                    doc_id = r.get("attachment_id", 0)
+                    if doc_id and doc_id not in seen_doc_ids_kg:
+                        seen_doc_ids_kg.add(doc_id)
                         rag_sources.append({
                             "number": len(rag_sources) + 1,
-                            "filename": r.filename,
-                            "stored_filename": r.stored_filename,
-                            "document_id": r.document_id,
-                            "chunk_text": r.chunk_text,
-                            "chunk_index": getattr(r, "chunk_index", None),
+                            "filename": r["filename"],
+                            "stored_filename": r.get("stored_filename", ""),
+                            "document_id": doc_id,
+                            "chunk_text": r.get("chunk_text", ""),
+                            "chunk_index": r.get("chunk_index"),
                         })
-                doc_to_num = {
+                doc_to_num_kg = {
                     s["document_id"]: s["number"] for s in rag_sources
                 }
                 rag_chunks = []
-                for result in hybrid_results:
-                    src_num = doc_to_num[result.document_id]
-                    chunk_info = f"[{src_num}] {result.filename}"
-                    if result.source == "hybrid":
-                        chunk_info += (
-                            f" (vector {result.vector_score:.0%},"
-                            f" graph {result.graph_score:.0%})"
-                        )
-                    elif result.source == "vector":
-                        chunk_info += (
-                            f" (similarity {result.vector_score:.0%})"
-                        )
-                    else:
-                        chunk_info += (
-                            f" (graph score {result.graph_score:.0%})"
-                        )
-                    chunk_info += "\n"
-                    if result.matched_entities:
-                        entities_str = ", ".join(
-                            f"{e['name']} ({e['type']})"
-                            for e in result.matched_entities[:3]
-                        )
-                        chunk_info += f"Related entities: {entities_str}\n"
-                    if result.relationships:
-                        rels_str = "; ".join(
-                            f"{r.get('source_name', 'Entity')} "
-                            f"{r['relation']} "
-                            f"{r.get('target_name', 'Entity')}"
-                            for r in result.relationships[:2]
-                        )
-                        chunk_info += f"Relationships: {rels_str}\n"
-                    chunk_info += f"\n{result.chunk_text}"
-                    rag_chunks.append(chunk_info)
+                for r in rag_results:
+                    doc_id = r.get("attachment_id", 0)
+                    num = doc_to_num_kg.get(doc_id, "?")
+                    heading = r.get("heading_context", "")
+                    is_graph = graph_doc_ids and doc_id in graph_doc_ids
+                    header = (
+                        f"[{num}] {r['filename']}"
+                        + (f" | {heading}" if heading else "")
+                        + (" [graph]" if is_graph else "")
+                    )
+                    rag_chunks.append(f"{header}\n\n{r['chunk_text'][:4000]}")
                 rag_context = "\n\n---\n\n".join(rag_chunks)
+                if len(rag_context) > 24000:
+                    rag_context = rag_context[:24000]
                 log(
-                    f"Retrieved {len(hybrid_results)} chunks "
-                    f"from {len(rag_sources)} document(s)"
+                    f"RRF+Graph: {len(rag_results)} fused chunks "
+                    f"from {len(rag_sources)} document(s) "
+                    f"({len(rag_context)} chars)"
                 )
             else:
-                log("No hybrid results found")
+                log("No results found")
 
         else:
-            # Knowledge graph disabled — use RAGService directly so section
-            # group expansion and BM25 re-ranking are applied.
+            # Knowledge graph disabled — RAGService + HyDE + multi-query RRF.
             rag_service = RAGService(db)
-            rag_results = await rag_service.search(
-                query=search_query,
-                user_id=user.id if user else None,
+            context_for_enhance = pre_history_dicts + [
+                {"role": "user", "content": data.content}
+            ]
+
+            # Generate HyDE document and query variants concurrently
+            hyde_doc, query_variants = await asyncio.gather(
+                ai_service.generate_hyde_document(
+                    data.content, context_for_enhance
+                ),
+                ai_service.generate_query_variants(
+                    data.content, context_for_enhance
+                ),
             )
+            log(f"HyDE doc   : {hyde_doc[:80]}…")
+            log(f"Variants   : {query_variants}")
+
+            # Embed HyDE document (represents a hypothetical relevant chunk)
+            hyde_emb: list[float] | None = None
+            if hyde_doc:
+                hyde_emb = await rag_service.embedding.embed_text(hyde_doc)
+
+            # Run all searches in parallel: rewritten + variants + HyDE
+            uid = user.id if user else None
+            search_coros = [
+                rag_service.search(query=search_query, user_id=uid),
+                *[
+                    rag_service.search(query=v, user_id=uid)
+                    for v in query_variants
+                ],
+            ]
+            if hyde_emb:
+                search_coros.append(
+                    rag_service.search(
+                        query=data.content,
+                        user_id=uid,
+                        query_embedding=hyde_emb,
+                    )
+                )
+
+            all_result_lists = await asyncio.gather(*search_coros)
+            log(
+                f"Ran {len(all_result_lists)} searches — "
+                f"counts: {[len(r) for r in all_result_lists]}"
+            )
+
+            # Fuse with Reciprocal Rank Fusion
+            rag_results = _rrf_fuse(list(all_result_lists))
+
             if rag_results:
                 seen_doc_ids_v: set[int] = set()
                 for r in rag_results:
@@ -647,7 +821,7 @@ async def send_message_stream(
                 if len(rag_context) > 24000:
                     rag_context = rag_context[:24000]
                 log(
-                    f"Retrieved {len(rag_results)} chunks "
+                    f"RRF: {len(rag_results)} fused chunks "
                     f"from {len(rag_sources)} document(s) "
                     f"({len(rag_context)} chars)"
                 )

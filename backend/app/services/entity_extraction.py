@@ -19,64 +19,31 @@ def log(message: str):
     print(f"[{timestamp}] [ENTITY_EXTRACT] {message}")
 
 
-# Supported entity types
+# 6 focused entity types for Indonesian corporate knowledge base
 ENTITY_TYPES = [
-    "pasal",
-    "person",
-    "organization",
-    "company",
-    "regulation",
-    "product",
-    "technology",
-    "country",
-    "location",
-    "date",
-    "project",
-    "concept",
-    "event",
-    "document",
-    "standard",
-    "process",
+    "role",      # Jabatan, posisi, unit organisasi dengan wewenang/tanggung jawab
+    "policy",    # Kebijakan, SOP, peraturan, ketentuan tertulis
+    "process",   # Alur kerja atau prosedur multi-tahap
+    "activity",  # Tindakan atau kegiatan tunggal yang spesifik
+    "time",      # Batas waktu, durasi, frekuensi
+    "report",    # Laporan, formulir, dokumen output
 ]
 
-# Entity extraction prompt - strict JSON output
-# Note: Double curly braces {{ }} are used to escape them for Python .format()
-ENTITY_EXTRACTION_PROMPT = """Extract named entities from the following text.
+ENTITY_EXTRACTION_PROMPT = """Extract named entities from the following text from an Indonesian corporate document (policies, SOPs, procedures, regulations).
 
 RULES:
 1. Output ONLY valid JSON, no markdown, no explanation
-2. Extract entities of these types: pasal, person, organization, company, regulation, product, technology, country, location, date, project, concept, event, document, standard, process
-3. Normalize entity names (e.g., "Bank Indonesia" not "bank indonesia")
-4. Include confidence score (0.0-1.0) for each entity
-5. Do not include generic terms or pronouns
-
-OUTPUT FORMAT:
-{{
-  "entities": [
-    {{"name": "Entity Name", "type": "entity_type", "confidence": 0.95}}
-  ]
-}}
-
-TEXT:
-{text}
-
-JSON:"""
-
-# Prompt used when the document's regulation title is known — adds pasal extraction rules
-ENTITY_EXTRACTION_PROMPT_WITH_PASAL = """Extract named entities from the following text.
-
-CURRENT DOCUMENT: {document_title}
-
-RULES:
-1. Output ONLY valid JSON, no markdown, no explanation
-2. Extract entities of these types: pasal, person, organization, company, regulation, product, technology, country, location, date, project, concept, event, document, standard, process
-3. For PASAL entities (articles/sections in Indonesian regulations):
-   - Pasal that belongs to THIS document → name it "Pasal [number] {document_title}" (e.g. "Pasal 5 {document_title}")
-   - Pasal cited from ANOTHER regulation → use the citation as written in text (e.g. "Pasal 12 PP No. 71/2019")
-   - Include ayat if specified, e.g. "Pasal 5 ayat (2) {document_title}"
-4. Normalize other entity names (e.g., "Bank Indonesia" not "bank indonesia")
+2. Extract entities of ONLY these 6 types:
+   - role: Jabatan, posisi, atau unit organisasi (e.g. "Direktur Keuangan", "Tim Procurement", "Komite Audit")
+   - policy: Kebijakan, SOP, peraturan, atau ketentuan tertulis (e.g. "SOP Pengadaan Barang", "SE No. 5/2024")
+   - process: Alur kerja atau prosedur yang memiliki beberapa tahapan (e.g. "prosedur approval", "alur pengajuan cuti")
+   - activity: Tindakan atau kegiatan tunggal yang spesifik (e.g. "verifikasi dokumen", "menandatangani kontrak")
+   - time: Batas waktu, durasi, atau frekuensi (e.g. "3 hari kerja", "paling lambat H+7", "setiap triwulan")
+   - report: Laporan, formulir, atau dokumen output (e.g. "Laporan Keuangan Bulanan", "Berita Acara", "Formulir F-HR-001")
+3. Do NOT extract: personal names, company names, locations, products, technology terms, or generic words
+4. Normalize entity names properly (e.g. title case for roles)
 5. Include confidence score (0.0-1.0) for each entity
-6. Do not include generic terms or pronouns
+6. Extract at most 15 entities
 
 OUTPUT FORMAT:
 {{
@@ -100,13 +67,8 @@ class ExtractedEntity:
 
     def normalize_name(self) -> str:
         """Return normalized version of entity name for matching."""
-        # Lowercase, remove extra spaces, strip
         normalized = self.name.lower().strip()
         normalized = re.sub(r'\s+', ' ', normalized)
-        # Remove common prefixes/suffixes
-        for prefix in ['the ', 'a ', 'an ']:
-            if normalized.startswith(prefix):
-                normalized = normalized[len(prefix):]
         return normalized
 
 
@@ -122,41 +84,23 @@ class EntityExtractionService:
         model: Optional[str] = None,
     ):
         self.base_url = base_url or settings.OLLAMA_BASE_URL
-        self.model = model or settings.OLLAMA_TEXT_MODEL  # gemma3:4b
-        self.timeout = 120.0  # Entity extraction can take time
+        self.model = model or settings.OLLAMA_TEXT_MODEL
+        self.timeout = 120.0
 
     async def extract_entities(
         self,
         text: str,
-        max_entities: int = 50,
+        max_entities: int = 15,
         document_title: Optional[str] = None,
     ) -> list[ExtractedEntity]:
-        """
-        Extract entities from text using LLM.
-
-        Args:
-            text: Text to extract entities from
-            max_entities: Maximum number of entities to extract
-            document_title: Regulation title (e.g. "UU No. 11/2020") used
-                to name pasal entities from the current document correctly.
-
-        Returns:
-            List of extracted entities
-        """
+        """Extract entities from text using LLM."""
         if not text or len(text.strip()) < 10:
             return []
 
-        # Truncate very long texts
         if len(text) > 4000:
             text = text[:4000] + "..."
 
-        if document_title:
-            prompt = ENTITY_EXTRACTION_PROMPT_WITH_PASAL.format(
-                document_title=document_title,
-                text=text,
-            )
-        else:
-            prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
+        prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
 
         try:
             log(f"Extracting entities from {len(text)} chars using {self.model}...")
@@ -170,8 +114,8 @@ class EntityExtractionService:
                         "prompt": prompt,
                         "stream": False,
                         "options": {
-                            "temperature": 0.1,  # Low temp for deterministic output
-                            "num_predict": 2000,
+                            "temperature": 0.1,
+                            "num_predict": 1500,
                             "top_p": 0.9,
                         }
                     },
@@ -196,17 +140,14 @@ class EntityExtractionService:
         max_entities: int,
     ) -> list[ExtractedEntity]:
         """Parse LLM output to extract entities."""
-        # Clean the output
         cleaned = raw_output.strip()
 
-        # Try direct JSON parse
         try:
             parsed = json.loads(cleaned)
             return self._validate_entities(parsed, max_entities)
         except json.JSONDecodeError:
             pass
 
-        # Try to extract JSON from text
         json_match = re.search(r'\{[\s\S]*\}', cleaned)
         if json_match:
             try:
@@ -215,12 +156,13 @@ class EntityExtractionService:
             except json.JSONDecodeError:
                 pass
 
-        # Try to extract JSON array
         array_match = re.search(r'\[[\s\S]*\]', cleaned)
         if array_match:
             try:
                 entities_list = json.loads(array_match.group())
-                return self._validate_entities({"entities": entities_list}, max_entities)
+                return self._validate_entities(
+                    {"entities": entities_list}, max_entities
+                )
             except json.JSONDecodeError:
                 pass
 
@@ -247,18 +189,14 @@ class EntityExtractionService:
             entity_type = item.get("type", "").lower().strip()
             confidence = item.get("confidence", 1.0)
 
-            # Validate required fields
             if not name or len(name) < 2:
                 continue
 
-            # Validate entity type
             if entity_type not in ENTITY_TYPES:
-                # Try to match similar type
                 entity_type = self._match_entity_type(entity_type)
                 if not entity_type:
-                    entity_type = "concept"  # Default fallback
+                    continue  # Drop unknown types rather than guess
 
-            # Validate confidence
             try:
                 confidence = float(confidence)
                 confidence = max(0.0, min(1.0, confidence))
@@ -274,42 +212,55 @@ class EntityExtractionService:
         return entities
 
     def _match_entity_type(self, entity_type: str) -> Optional[str]:
-        """Try to match an invalid entity type to a valid one."""
+        """Map common synonyms to the 6 valid entity types."""
         type_mappings = {
-            "article": "pasal",
-            "section": "pasal",
-            "ayat": "pasal",
-            "org": "organization",
-            "corp": "company",
-            "firm": "company",
-            "enterprise": "company",
-            "place": "location",
-            "city": "location",
-            "region": "location",
-            "rule": "regulation",
-            "law": "regulation",
-            "policy": "regulation",
-            "tech": "technology",
-            "system": "technology",
-            "tool": "technology",
-            "software": "technology",
-            "hardware": "technology",
-            "nation": "country",
-            "state": "country",
-            "individual": "person",
-            "human": "person",
-            "term": "concept",
-            "idea": "concept",
-            "topic": "concept",
-            "service": "product",
-            "offering": "product",
+            # role
+            "jabatan": "role",
+            "posisi": "role",
+            "unit": "role",
+            "department": "role",
+            "divisi": "role",
+            "bagian": "role",
+            "tim": "role",
+            "person": "role",
+            "organization": "role",
+            # policy
+            "sop": "policy",
+            "kebijakan": "policy",
+            "peraturan": "policy",
+            "regulation": "policy",
+            "standard": "policy",
+            "ketentuan": "policy",
+            "document": "policy",
+            # process
+            "prosedur": "process",
+            "alur": "process",
+            "procedure": "process",
+            "workflow": "process",
+            # activity
+            "kegiatan": "activity",
+            "tindakan": "activity",
+            "langkah": "activity",
+            "action": "activity",
+            "task": "activity",
+            "event": "activity",
+            # time
+            "deadline": "time",
+            "durasi": "time",
+            "date": "time",
+            "waktu": "time",
+            "batas": "time",
+            # report
+            "laporan": "report",
+            "formulir": "report",
+            "form": "report",
+            "dokumen": "report",
+            "output": "report",
         }
 
-        # Check direct mapping
         if entity_type in type_mappings:
             return type_mappings[entity_type]
 
-        # Check partial match
         for key, value in type_mappings.items():
             if key in entity_type or entity_type in key:
                 return value
@@ -319,18 +270,9 @@ class EntityExtractionService:
     async def extract_entities_batch(
         self,
         texts: list[str],
-        max_entities_per_chunk: int = 20,
+        max_entities_per_chunk: int = 15,
     ) -> list[list[ExtractedEntity]]:
-        """
-        Extract entities from multiple text chunks.
-
-        Args:
-            texts: List of text chunks
-            max_entities_per_chunk: Max entities per chunk
-
-        Returns:
-            List of entity lists (one per chunk)
-        """
+        """Extract entities from multiple text chunks."""
         results = []
         total = len(texts)
 
@@ -341,7 +283,6 @@ class EntityExtractionService:
             entities = await self.extract_entities(text, max_entities_per_chunk)
             results.append(entities)
 
-            # Log progress every 5 chunks
             if (i + 1) % 5 == 0 or i == total - 1:
                 elapsed = time.time() - start_time
                 rate = (i + 1) / elapsed if elapsed > 0 else 0
@@ -361,7 +302,10 @@ class EntityExtractionService:
                 if response.status_code == 200:
                     models = response.json().get("models", [])
                     model_name = self.model.split(":")[0]
-                    return any(m.get("name", "").startswith(model_name) for m in models)
+                    return any(
+                        m.get("name", "").startswith(model_name)
+                        for m in models
+                    )
         except Exception:
             pass
         return False

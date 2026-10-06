@@ -1,3 +1,4 @@
+import re
 from typing import AsyncGenerator, List, Dict, Union
 
 from app.ai.ollama import OllamaClient
@@ -117,6 +118,76 @@ class AIService:
         if not rewritten or len(rewritten) > 300:
             return query
         return rewritten
+
+    async def generate_hyde_document(self, query: str, history: list[dict]) -> str:
+        """Generate a hypothetical answer paragraph for HyDE retrieval.
+
+        Embedding a plausible document excerpt rather than the raw query
+        moves the vector closer to real document chunks in semantic space.
+        """
+        recent = history[-4:] if len(history) > 4 else history
+        context_lines = "\n".join(
+            f"{m['role'].capitalize()}: {m['content'][:200]}"
+            for m in recent
+            if m.get("content")
+        )
+        prompt = (
+            "You are an expert on Indonesian corporate policies and procedures.\n\n"
+            "Based on the conversation context and the user's question, write a "
+            "short 2-3 sentence paragraph that would appear verbatim in the "
+            "relevant company document as an answer to this question. "
+            "Write in formal Bahasa Indonesia.\n\n"
+            "Rules:\n"
+            "- Write as if you ARE the document, not as an assistant answering\n"
+            "- Include relevant policy names, roles, numbers, and formal terms\n"
+            "- Output ONLY the paragraph, no preamble or explanation\n\n"
+            f"Context:\n{context_lines}\n\n"
+            f"Question: {query}\n\n"
+            "Document paragraph:"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        result = await self.client.chat(messages)
+        return result.strip()[:600]
+
+    async def generate_query_variants(
+        self, query: str, history: list[dict]
+    ) -> list[str]:
+        """Generate 3 distinct query variants for multi-query retrieval with RRF.
+
+        Different phrasings improve recall by covering vocabulary gaps that
+        would otherwise miss relevant chunks with any single query.
+        """
+        recent = history[-4:] if len(history) > 4 else history
+        context_lines = "\n".join(
+            f"{m['role'].capitalize()}: {m['content'][:200]}"
+            for m in recent
+            if m.get("content")
+        )
+        prompt = (
+            "You are a search query optimizer for a corporate document knowledge base "
+            "(Indonesian company policies, SOPs, regulations).\n\n"
+            "Given the user's question and conversation context, output exactly 3 "
+            "different search queries, one per line, approaching the same information "
+            "need from different angles:\n"
+            "  Line 1 — Formal Indonesian: expand abbreviations, use official terms\n"
+            "  Line 2 — Keyword-focused: nouns and key concepts only, no stopwords\n"
+            "  Line 3 — English: translate the core intent\n\n"
+            "Rules:\n"
+            "- Output ONLY 3 plain lines, no numbering, no explanation, no quotes\n"
+            "- Each query max 20 words\n\n"
+            f"Context:\n{context_lines}\n\n"
+            f"Question: {query}\n\n"
+            "Queries:"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        result = await self.client.chat(messages)
+        lines = [
+            ln.strip()
+            for ln in result.strip().splitlines()
+            if ln.strip()
+        ]
+        cleaned = [re.sub(r"^\d+[.)]\s*", "", ln) for ln in lines]
+        return cleaned[:3] if cleaned else [query]
 
     async def generate_title(self, first_message: str) -> str:
         prompt = f"""Generate a very short title (max 5 words) for a conversation that starts with this message:

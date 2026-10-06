@@ -92,4 +92,29 @@ export const graphService = {
       mention_count: e.mention_count,
     }))
   },
+
+  async reextractAll(): Promise<{ queued: number }> {
+    const res = await api.post('/graph/reextract-all')
+    return res.data
+  },
+
+  async compareSearch(query: string, topK = 6): Promise<{
+    query: string
+    graph_entities_matched: number
+    graph_docs_expanded: number
+    without_graph: CompareResult[]
+    with_graph: CompareResult[]
+  }> {
+    const res = await api.post('/graph/compare-search', { query, top_k: topK })
+    return res.data
+  },
+}
+
+export interface CompareResult {
+  rank: number
+  filename: string
+  similarity: number
+  heading: string
+  from_graph_doc: boolean
+  chunk_preview: string
 }

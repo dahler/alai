@@ -1,26 +1,17 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { graphService, GraphNode, GraphData, EntityDetail } from '../services/graph'
+import { graphService, GraphNode, GraphData, EntityDetail, CompareResult } from '../services/graph'
 import { documentsService, Document } from '../services/documents'
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
 
 const TYPE_COLORS: Record<string, string> = {
-  pasal: '#f59e0b',
-  person: '#60a5fa',
-  organization: '#d97706',
-  company: '#b45309',
-  regulation: '#fb923c',
-  product: '#34d399',
-  technology: '#22d3ee',
-  country: '#f87171',
-  location: '#2dd4bf',
-  date: '#9ca3af',
-  concept: '#fbbf24',
-  event: '#f472b6',
-  document: '#a3e635',
-  standard: '#86efac',
-  process: '#fdba74',
+  role:     '#60a5fa',   // blue — who
+  policy:   '#fb923c',   // orange — rules
+  process:  '#a78bfa',   // purple — how
+  activity: '#34d399',   // green — action
+  time:     '#9ca3af',   // grey — when
+  report:   '#f472b6',   // pink — output
 }
 
 const getColor = (type: string) => TYPE_COLORS[type] ?? '#e5e7eb'
@@ -138,6 +129,17 @@ export function KnowledgeGraph() {
   const [isPasalView, setIsPasalView] = useState(false)
   const [isHubMode, setIsHubMode] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const [isBuildingGraph, setIsBuildingGraph] = useState(false)
+  const [buildResult, setBuildResult] = useState<string | null>(null)
+  const [compareQuery, setCompareQuery] = useState('')
+  const [isComparing, setIsComparing] = useState(false)
+  const [compareResult, setCompareResult] = useState<{
+    query: string
+    graph_entities_matched: number
+    graph_docs_expanded: number
+    without_graph: CompareResult[]
+    with_graph: CompareResult[]
+  } | null>(null)
 
   // ── Drag / pan refs ─────────────────────────────────────────────────────────
   const nodeDragRef = useRef<{
@@ -250,6 +252,39 @@ export function KnowledgeGraph() {
       setIsDetailLoading(false)
     }
   }, [])
+
+  // ── Build graph for all existing documents ───────────────────────────────────
+  const handleBuildGraph = useCallback(async () => {
+    setIsBuildingGraph(true)
+    setBuildResult(null)
+    try {
+      const { queued } = await graphService.reextractAll()
+      setBuildResult(
+        queued > 0
+          ? `Queued ${queued} document${queued !== 1 ? 's' : ''} — processing in background`
+          : 'No embedded documents found to process'
+      )
+    } catch {
+      setBuildResult('Failed to queue extraction')
+    } finally {
+      setIsBuildingGraph(false)
+    }
+  }, [])
+
+  // ── Compare search with / without graph ──────────────────────────────────────
+  const handleCompare = useCallback(async () => {
+    if (!compareQuery.trim()) return
+    setIsComparing(true)
+    setCompareResult(null)
+    try {
+      const result = await graphService.compareSearch(compareQuery.trim(), 6)
+      setCompareResult(result)
+    } catch {
+      // ignore — user will see nothing happened
+    } finally {
+      setIsComparing(false)
+    }
+  }, [compareQuery])
 
   // ── Mouse events ─────────────────────────────────────────────────────────────
   const handleNodeMouseDown = (e: React.MouseEvent, nodeId: number) => {
@@ -419,6 +454,29 @@ export function KnowledgeGraph() {
           </p>
         </div>
 
+        {/* Build Graph */}
+        <div className="flex flex-col items-end gap-0.5">
+          <button
+            onClick={handleBuildGraph}
+            disabled={isBuildingGraph}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors bg-dark-hover text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            title="Extract knowledge graph from all embedded documents"
+          >
+            {isBuildingGraph ? (
+              <>
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                </svg>
+                Building…
+              </>
+            ) : 'Build Graph'}
+          </button>
+          {buildResult && (
+            <p className="text-[10px] text-dark-muted max-w-[180px] text-right leading-tight">{buildResult}</p>
+          )}
+        </div>
+
         {/* Pasal View toggle */}
         <button
           onClick={() => setIsPasalView((v) => !v)}
@@ -438,6 +496,25 @@ export function KnowledgeGraph() {
         >
           ?
         </button>
+
+        {/* Compare search */}
+        <div className="flex items-center gap-1.5 border-l border-dark-chat pl-3">
+          <input
+            type="text"
+            value={compareQuery}
+            onChange={(e) => setCompareQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleCompare()}
+            placeholder="Test query…"
+            className="text-sm bg-dark-sidebar border border-dark-chat rounded-lg px-3 py-1.5 w-40 focus:outline-none focus:ring-1 focus:ring-dark-hover placeholder:text-dark-muted/50"
+          />
+          <button
+            onClick={handleCompare}
+            disabled={isComparing || !compareQuery.trim()}
+            className="px-3 py-1.5 rounded-lg text-sm font-medium bg-dark-chat hover:bg-dark-chat/60 text-dark-text disabled:opacity-40 transition-colors whitespace-nowrap"
+          >
+            {isComparing ? '…' : 'Compare'}
+          </button>
+        </div>
       </div>
 
       {/* Help panel */}
@@ -1020,6 +1097,73 @@ export function KnowledgeGraph() {
           ) : null}
         </div>
       </div>
+
+      {/* ── Search comparison overlay ── */}
+      {compareResult && (
+        <div className="absolute inset-0 z-50 bg-dark-bg/96 overflow-y-auto p-6">
+          <div className="max-w-5xl mx-auto">
+            <div className="flex items-start justify-between mb-5">
+              <div>
+                <h2 className="text-base font-semibold">Search Comparison</h2>
+                <p className="text-xs text-dark-muted mt-0.5">
+                  "{compareResult.query}" · {compareResult.graph_entities_matched} entities matched · {compareResult.graph_docs_expanded} docs expanded by graph
+                </p>
+                {compareResult.graph_docs_expanded === 0 && (
+                  <p className="text-xs text-amber-600 mt-1">No graph entities matched — build the graph first or try a more specific query.</p>
+                )}
+              </div>
+              <button onClick={() => setCompareResult(null)} className="text-dark-muted hover:text-dark-text p-1 mt-0.5">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              {/* Without graph */}
+              <div>
+                <p className="text-[11px] font-semibold text-dark-muted uppercase tracking-wider mb-2">Without Graph (vector only)</p>
+                <div className="space-y-2">
+                  {compareResult.without_graph.map((r) => (
+                    <div key={r.rank} className="bg-dark-sidebar rounded-xl p-3">
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="min-w-0">
+                          <span className="text-xs font-semibold text-dark-text">{r.rank}. {r.filename}</span>
+                          {r.heading && <span className="text-[11px] text-dark-muted ml-1 block truncate">{r.heading}</span>}
+                        </div>
+                        <span className="text-xs text-dark-muted flex-shrink-0 tabular-nums">{(r.similarity * 100).toFixed(0)}%</span>
+                      </div>
+                      <p className="text-[11px] text-dark-muted leading-relaxed line-clamp-3">{r.chunk_preview}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* With graph */}
+              <div>
+                <p className="text-[11px] font-semibold text-amber-600 uppercase tracking-wider mb-2">With Graph (graph + vector RRF)</p>
+                <div className="space-y-2">
+                  {compareResult.with_graph.map((r) => (
+                    <div key={r.rank} className={`rounded-xl p-3 ${r.from_graph_doc ? 'bg-amber-50 border border-amber-200' : 'bg-dark-sidebar'}`}>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="min-w-0">
+                          <span className="text-xs font-semibold text-dark-text">{r.rank}. {r.filename}</span>
+                          {r.from_graph_doc && (
+                            <span className="ml-1.5 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">via graph</span>
+                          )}
+                          {r.heading && <span className="text-[11px] text-dark-muted ml-1 block truncate">{r.heading}</span>}
+                        </div>
+                        <span className="text-xs text-dark-muted flex-shrink-0 tabular-nums">{(r.similarity * 100).toFixed(0)}%</span>
+                      </div>
+                      <p className="text-[11px] text-dark-muted leading-relaxed line-clamp-3">{r.chunk_preview}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

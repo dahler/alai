@@ -20,52 +20,23 @@ def log(message: str):
     print(f"[{timestamp}] [REL_EXTRACT] {message}")
 
 
-# Supported relationship types
+# Focused relationship types matching the 6 corporate entity types
 RELATIONSHIP_TYPES = [
-    "regulates",
-    "regulated_by",
-    "owns",
-    "owned_by",
-    "modifies",
-    "modified_by",
-    "revokes",
-    "revoked_by",
-    "references",
-    "referenced_by",
-    "implements",
-    "implemented_by",
-    "affects",
-    "affected_by",
-    "depends_on",
-    "dependency_of",
-    "belongs_to",
-    "contains",
-    "mentions",
-    "mentioned_in",
-    "collaborates_with",
-    "competes_with",
-    "partners_with",
-    "subsidiary_of",
-    "parent_of",
-    "located_in",
-    "works_for",
-    "employs",
-    "created_by",
-    "creates",
-    "uses",
-    "used_by",
-    "provides",
-    "provided_by",
-    "related_to",
-    "part_of",
-    "has_part",
-    "predecessor_of",
-    "successor_of",
-    "version_of",
+    "approves",          # ROLE → PROCESS/ACTIVITY
+    "responsible_for",   # ROLE → PROCESS/ACTIVITY/REPORT
+    "submits",           # ROLE → REPORT
+    "receives",          # ROLE → REPORT
+    "governs",           # POLICY → PROCESS/ROLE/ACTIVITY
+    "produces",          # PROCESS/ACTIVITY → REPORT
+    "part_of",           # ACTIVITY → PROCESS, PROCESS → PROCESS
+    "follows",           # PROCESS → PROCESS (sequential step)
+    "requires",          # PROCESS/POLICY → ACTIVITY/REPORT
+    "due_within",        # PROCESS/REPORT/ACTIVITY → TIME
+    "applies_to",        # TIME/POLICY → PROCESS/ROLE
+    "references",        # POLICY → POLICY (cross-reference)
 ]
 
-# Relationship extraction prompt - strict JSON output
-RELATIONSHIP_EXTRACTION_PROMPT = """Extract relationships between entities from the following text.
+RELATIONSHIP_EXTRACTION_PROMPT = """Extract relationships between the listed entities from the following Indonesian corporate document text.
 
 ENTITIES IN TEXT:
 {entities}
@@ -73,16 +44,22 @@ ENTITIES IN TEXT:
 RULES:
 1. Output ONLY valid JSON, no markdown, no explanation
 2. Only extract relationships between the provided entities
-3. For PASAL entities, prioritize these relationship types:
-   - "modifies": pasal mengubah/memodifikasi another pasal
-   - "revokes": pasal mencabut/menghapus another pasal
-   - "references": pasal merujuk/menyebut another pasal
-   - "implements": pasal melaksanakan/menjabarkan another pasal
-4. Other types: regulates, owns, affects, depends_on, belongs_to, mentions,
-   collaborates_with, uses, provides, related_to, part_of, created_by,
-   works_for, located_in
-5. Include confidence score (0.0-1.0) for each relationship
-6. Include a brief context/evidence from the text
+3. Use ONLY these relationship types:
+   - approves: a role approves a process or activity
+   - responsible_for: a role is responsible for a process, activity, or report
+   - submits: a role submits/menyerahkan a report
+   - receives: a role receives a report
+   - governs: a policy governs/mengatur a process, role, or activity
+   - produces: a process or activity produces a report
+   - part_of: an activity is part of a process, or a process is part of another
+   - follows: a process or activity follows another (sequential order)
+   - requires: a process or policy requires an activity or report
+   - due_within: a process, activity, or report must be done within a time period
+   - applies_to: a time constraint or policy applies to a process or role
+   - references: a policy references another policy
+4. Include confidence score (0.0-1.0) for each relationship
+5. Include a brief context/evidence from the text (max 200 chars)
+6. Extract at most 10 relationships
 
 OUTPUT FORMAT:
 {{
@@ -113,11 +90,9 @@ class ExtractedRelationship:
     context: Optional[str] = None
 
     def normalize_source(self) -> str:
-        """Return normalized source entity name."""
         return self.source.lower().strip()
 
     def normalize_target(self) -> str:
-        """Return normalized target entity name."""
         return self.target.lower().strip()
 
 
@@ -133,37 +108,25 @@ class RelationshipExtractionService:
         model: Optional[str] = None,
     ):
         self.base_url = base_url or settings.OLLAMA_BASE_URL
-        self.model = model or settings.OLLAMA_TEXT_MODEL  # gemma3:4b
+        self.model = model or settings.OLLAMA_TEXT_MODEL
         self.timeout = 120.0
 
     async def extract_relationships(
         self,
         text: str,
         entities: list[ExtractedEntity],
-        max_relationships: int = 30,
+        max_relationships: int = 10,
     ) -> list[ExtractedRelationship]:
-        """
-        Extract relationships between entities from text.
-
-        Args:
-            text: Text containing the entities
-            entities: List of entities to find relationships between
-            max_relationships: Maximum number of relationships to extract
-
-        Returns:
-            List of extracted relationships
-        """
+        """Extract relationships between entities from text."""
         if not text or not entities or len(entities) < 2:
             return []
 
-        # Truncate very long texts
         if len(text) > 4000:
             text = text[:4000] + "..."
 
-        # Format entities for prompt
         entity_list = "\n".join(
             f"- {e.name} ({e.entity_type})"
-            for e in entities[:30]  # Limit entities in prompt
+            for e in entities[:20]
         )
 
         prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(
@@ -184,7 +147,7 @@ class RelationshipExtractionService:
                         "stream": False,
                         "options": {
                             "temperature": 0.1,
-                            "num_predict": 2000,
+                            "num_predict": 1500,
                             "top_p": 0.9,
                         }
                     },
@@ -197,8 +160,10 @@ class RelationshipExtractionService:
             relationships = self._parse_relationships(
                 raw_output, entities, max_relationships
             )
-            log(f"Extracted {len(relationships)} relationships in {elapsed:.2f}s")
-
+            log(
+                f"Extracted {len(relationships)} relationships "
+                f"in {elapsed:.2f}s"
+            )
             return relationships
 
         except Exception as e:
@@ -212,14 +177,11 @@ class RelationshipExtractionService:
         max_relationships: int,
     ) -> list[ExtractedRelationship]:
         """Parse LLM output to extract relationships."""
-        # Build entity name lookup for validation
         entity_names = {e.name.lower().strip() for e in entities}
         entity_names.update(e.normalize_name() for e in entities)
 
-        # Clean the output
         cleaned = raw_output.strip()
 
-        # Try direct JSON parse
         try:
             parsed = json.loads(cleaned)
             return self._validate_relationships(
@@ -228,7 +190,6 @@ class RelationshipExtractionService:
         except json.JSONDecodeError:
             pass
 
-        # Try to extract JSON from text
         json_match = re.search(r'\{[\s\S]*\}', cleaned)
         if json_match:
             try:
@@ -239,18 +200,21 @@ class RelationshipExtractionService:
             except json.JSONDecodeError:
                 pass
 
-        # Try to extract JSON array
         array_match = re.search(r'\[[\s\S]*\]', cleaned)
         if array_match:
             try:
                 rels_list = json.loads(array_match.group())
                 return self._validate_relationships(
-                    {"relationships": rels_list}, entity_names, max_relationships
+                    {"relationships": rels_list},
+                    entity_names,
+                    max_relationships,
                 )
             except json.JSONDecodeError:
                 pass
 
-        log(f"Failed to parse relationship extraction output: {cleaned[:200]}...")
+        log(
+            f"Failed to parse relationship output: {cleaned[:200]}..."
+        )
         return []
 
     def _validate_relationships(
@@ -276,11 +240,9 @@ class RelationshipExtractionService:
             confidence = item.get("confidence", 1.0)
             context = item.get("context", "")
 
-            # Validate required fields
             if not source or not target or not relation:
                 continue
 
-            # Validate source and target exist in entities
             source_lower = source.lower().strip()
             target_lower = target.lower().strip()
 
@@ -296,21 +258,18 @@ class RelationshipExtractionService:
             if not (source_valid and target_valid):
                 continue
 
-            # Validate/normalize relationship type
             relation = self._normalize_relation_type(relation)
             if not relation:
-                relation = "related_to"  # Default fallback
+                relation = "references"
 
-            # Validate confidence
             try:
                 confidence = float(confidence)
                 confidence = max(0.0, min(1.0, confidence))
             except (ValueError, TypeError):
                 confidence = 0.8
 
-            # Truncate context
-            if context and len(context) > 500:
-                context = context[:500] + "..."
+            if context and len(context) > 300:
+                context = context[:300] + "..."
 
             relationships.append(ExtractedRelationship(
                 source=source,
@@ -324,76 +283,67 @@ class RelationshipExtractionService:
 
     def _normalize_relation_type(self, relation: str) -> Optional[str]:
         """Normalize a relationship type to a standard form."""
-        # Direct match
         if relation in RELATIONSHIP_TYPES:
             return relation
 
-        # Common mappings
         relation_mappings = {
-            # English verbs
-            "regulate": "regulates",
-            "own": "owns",
-            "modify": "modifies",
-            "revoke": "revokes",
-            "repeal": "revokes",
-            "annul": "revokes",
+            # English
+            "approve": "approves",
+            "responsible": "responsible_for",
+            "submit": "submits",
+            "receive": "receives",
+            "govern": "governs",
+            "regulate": "governs",
+            "produce": "produces",
+            "generate": "produces",
+            "create": "produces",
+            "belong": "part_of",
+            "belong_to": "part_of",
+            "is_part_of": "part_of",
+            "follow": "follows",
+            "succeed": "follows",
+            "require": "requires",
+            "need": "requires",
+            "due": "due_within",
+            "apply": "applies_to",
             "reference": "references",
             "cite": "references",
-            "affect": "affects",
-            "depend": "depends_on",
-            "depend_on": "depends_on",
-            "belong": "belongs_to",
-            "belong_to": "belongs_to",
-            "mention": "mentions",
-            "collaborate": "collaborates_with",
-            "compete": "competes_with",
-            "partner": "partners_with",
-            "work": "works_for",
-            "work_for": "works_for",
-            "employ": "employs",
-            "create": "creates",
-            "use": "uses",
-            "implement": "implements",
-            "provide": "provides",
-            "relate": "related_to",
-            "relate_to": "related_to",
-            "part": "part_of",
-            "contain": "contains",
-            "include": "contains",
-            "has": "contains",
-            "is_part_of": "part_of",
-            "is_a": "related_to",
-            "type_of": "related_to",
-            "instance_of": "related_to",
-            # Indonesian verbs
-            "mengubah": "modifies",
-            "memodifikasi": "modifies",
-            "mencabut": "revokes",
-            "menghapus": "revokes",
+            # Indonesian
+            "menyetujui": "approves",
+            "menyetujui_proses": "approves",
+            "bertanggung_jawab": "responsible_for",
+            "bertanggung jawab": "responsible_for",
+            "menyerahkan": "submits",
+            "mengajukan": "submits",
+            "menerima": "receives",
+            "mengatur": "governs",
+            "meregulasi": "governs",
+            "menghasilkan": "produces",
+            "membuat": "produces",
+            "bagian_dari": "part_of",
+            "bagian dari": "part_of",
+            "mengikuti": "follows",
+            "memerlukan": "requires",
+            "membutuhkan": "requires",
+            "dalam_waktu": "due_within",
+            "berlaku_untuk": "applies_to",
+            "berlaku untuk": "applies_to",
             "merujuk": "references",
-            "menyebut": "references",
             "mengacu": "references",
-            "melaksanakan": "implements",
-            "menjabarkan": "implements",
-            "mengatur": "regulates",
-            "menyebutkan": "mentions",
-            "mempengaruhi": "affects",
-            "membentuk": "creates",
-            "mendirikan": "creates",
         }
 
-        # Check mapping
         if relation in relation_mappings:
             return relation_mappings[relation]
 
-        # Check partial match
         for key, value in relation_mappings.items():
-            if key in relation:
+            if key in relation or relation in key:
                 return value
 
-        # Check if it's close to a valid type
         for valid_type in RELATIONSHIP_TYPES:
-            if valid_type.startswith(relation[:4]) or relation.startswith(valid_type[:4]):
+            if (
+                valid_type.startswith(relation[:5])
+                or relation.startswith(valid_type[:5])
+            ):
                 return valid_type
 
         return None
@@ -401,18 +351,9 @@ class RelationshipExtractionService:
     async def extract_relationships_batch(
         self,
         chunks_with_entities: list[tuple[str, list[ExtractedEntity]]],
-        max_relationships_per_chunk: int = 15,
+        max_relationships_per_chunk: int = 10,
     ) -> list[list[ExtractedRelationship]]:
-        """
-        Extract relationships from multiple chunks with their entities.
-
-        Args:
-            chunks_with_entities: List of (text, entities) tuples
-            max_relationships_per_chunk: Max relationships per chunk
-
-        Returns:
-            List of relationship lists (one per chunk)
-        """
+        """Extract relationships from multiple chunks with their entities."""
         results = []
         total = len(chunks_with_entities)
 
@@ -425,7 +366,6 @@ class RelationshipExtractionService:
             )
             results.append(relationships)
 
-            # Log progress every 5 chunks
             if (i + 1) % 5 == 0 or i == total - 1:
                 elapsed = time.time() - start_time
                 rate = (i + 1) / elapsed if elapsed > 0 else 0
@@ -433,8 +373,10 @@ class RelationshipExtractionService:
 
         total_rels = sum(len(r) for r in results)
         elapsed = time.time() - start_time
-        log(f"Batch extraction complete: {total_rels} relationships in {elapsed:.2f}s")
-
+        log(
+            f"Batch extraction complete: {total_rels} relationships "
+            f"in {elapsed:.2f}s"
+        )
         return results
 
     async def health_check(self) -> bool:
@@ -445,7 +387,10 @@ class RelationshipExtractionService:
                 if response.status_code == 200:
                     models = response.json().get("models", [])
                     model_name = self.model.split(":")[0]
-                    return any(m.get("name", "").startswith(model_name) for m in models)
+                    return any(
+                        m.get("name", "").startswith(model_name)
+                        for m in models
+                    )
         except Exception:
             pass
         return False

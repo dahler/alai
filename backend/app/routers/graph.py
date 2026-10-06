@@ -3,15 +3,17 @@ Knowledge Graph API router.
 Endpoints for graph operations, hybrid search, and entity management.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, get_optional_user
 from app.models.user import User
-from app.services.knowledge_graph import KnowledgeGraphService
+from app.models.attachment import Attachment
+from app.services.knowledge_graph import KnowledgeGraphService, extract_graph_background
 
 
 router = APIRouter(prefix="/graph", tags=["knowledge-graph"])
@@ -188,7 +190,6 @@ async def get_graph_overview(
     db: AsyncSession = Depends(get_db),
 ):
     """Return top N entities by mention count + all relationships between them."""
-    from sqlalchemy import select
     from app.models.entity import Entity
     from app.models.relationship import EntityRelationship
 
@@ -362,6 +363,146 @@ async def get_related_documents(
         "document_id": document_id,
         "related_documents": related,
         "count": len(related),
+    }
+
+
+@router.post("/reextract-all")
+async def reextract_all_graphs(
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Queue knowledge graph extraction for all eligible embedded documents.
+
+    Admins process all embedded documents.
+    Regular users process only their own non-company documents.
+    """
+    conditions = [Attachment.is_embedded.is_(True)]
+    if not user.is_admin:
+        conditions.append(Attachment.user_id == user.id)
+        conditions.append(Attachment.is_company_doc.is_(False))
+
+    result = await db.execute(select(Attachment).where(*conditions))
+    attachments = result.scalars().all()
+
+    count = 0
+    for attachment in attachments:
+        attachment.graph_status = "pending"
+        background_tasks.add_task(extract_graph_background, attachment.id)
+        count += 1
+
+    await db.commit()
+    return {"queued": count}
+
+
+class CompareSearchRequest(BaseModel):
+    """Request for comparing search with and without graph expansion."""
+    query: str = Field(..., min_length=3, max_length=500)
+    top_k: int = Field(default=6, ge=1, le=20)
+
+
+@router.post("/compare-search")
+async def compare_search(
+    request: CompareSearchRequest,
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the same query with and without graph expansion, return both."""
+    from app.services.rag import RAGService
+    from app.models.entity import Entity
+    from app.models.document_entity import DocumentEntity
+    from app.models.relationship import EntityRelationship
+
+    rag = RAGService(db)
+    uid = user.id if user else None
+    q = request.query
+    k = request.top_k
+
+    # ── Without graph: plain RAGService ──────────────────────────────────────
+    plain = await rag.search(query=q, user_id=uid, top_k=k)
+
+    # ── Graph: fast keyword entity match + 1-hop expansion ───────────────────
+    words = [
+        w.strip(".,;:()[]\"'")
+        for w in q.lower().split()
+        if len(w.strip(".,;:()[]\"'")) > 3
+    ]
+    entity_ids: set[int] = set()
+    if words:
+        conds = [Entity.normalized_name.ilike(f"%{w}%") for w in words[:10]]
+        res = await db.execute(
+            select(Entity.id).where(or_(*conds)).limit(30)
+        )
+        entity_ids = {row[0] for row in res.all()}
+
+    if entity_ids:
+        rel_res = await db.execute(
+            select(
+                EntityRelationship.source_entity_id,
+                EntityRelationship.target_entity_id,
+            ).where(
+                or_(
+                    EntityRelationship.source_entity_id.in_(entity_ids),
+                    EntityRelationship.target_entity_id.in_(entity_ids),
+                )
+            ).limit(100)
+        )
+        for src, tgt in rel_res.all():
+            entity_ids.add(src)
+            entity_ids.add(tgt)
+
+    graph_doc_ids: set[int] = set()
+    if entity_ids:
+        doc_res = await db.execute(
+            select(DocumentEntity.document_id)
+            .where(DocumentEntity.entity_id.in_(entity_ids))
+            .distinct()
+        )
+        graph_doc_ids = {row[0] for row in doc_res.all()}
+
+    # ── Fuse plain + graph-scoped via RRF ────────────────────────────────────
+    if graph_doc_ids:
+        graph_scoped = await rag.search(
+            query=q,
+            user_id=uid,
+            top_k=k,
+            document_ids=list(graph_doc_ids),
+        )
+        scores: dict[int, float] = {}
+        by_id: dict[int, dict] = {}
+        for rank, r in enumerate(plain):
+            cid = r["chunk_id"]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (61 + rank)
+            by_id[cid] = r
+        for rank, r in enumerate(graph_scoped):
+            cid = r["chunk_id"]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (61 + rank)
+            if cid not in by_id:
+                by_id[cid] = r
+        sorted_ids = sorted(scores, key=lambda x: scores[x], reverse=True)
+        with_graph = [by_id[cid] for cid in sorted_ids[:k]]
+    else:
+        with_graph = plain
+
+    def fmt(results: list[dict], graph_ids: set[int]) -> list[dict]:
+        return [
+            {
+                "rank": i + 1,
+                "filename": r["filename"],
+                "similarity": round(r.get("similarity", 0), 3),
+                "heading": r.get("heading_context") or "",
+                "from_graph_doc": r.get("attachment_id") in graph_ids,
+                "chunk_preview": (r.get("chunk_text") or "")[:300],
+            }
+            for i, r in enumerate(results)
+        ]
+
+    return {
+        "query": q,
+        "graph_entities_matched": len(entity_ids),
+        "graph_docs_expanded": len(graph_doc_ids),
+        "without_graph": fmt(plain, set()),
+        "with_graph": fmt(with_graph, graph_doc_ids),
     }
 
 
