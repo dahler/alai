@@ -8,6 +8,7 @@ import AuthCallback from './pages/AuthCallback'
 import { useAuthStore } from './store/authStore'
 import { registerNavigate } from './services/api'
 import { Loading } from './components/common/Loading'
+import { ErrorBoundary } from './components/common/ErrorBoundary'
 
 const Documents = lazy(() =>
   import('./pages/Documents').then(m => ({ default: m.Documents }))
@@ -66,19 +67,19 @@ function App() {
       </Route>
       <Route
         path="/documents"
-        element={<Suspense fallback={fallback}><Documents /></Suspense>}
+        element={<ErrorBoundary><Suspense fallback={fallback}><Documents /></Suspense></ErrorBoundary>}
       />
       <Route
         path="/graph"
-        element={<Suspense fallback={fallback}><KnowledgeGraph /></Suspense>}
+        element={<ErrorBoundary><Suspense fallback={fallback}><KnowledgeGraph /></Suspense></ErrorBoundary>}
       />
       <Route
         path="/doc-graph"
-        element={<Suspense fallback={fallback}><DocumentGraph /></Suspense>}
+        element={<ErrorBoundary><Suspense fallback={fallback}><DocumentGraph /></Suspense></ErrorBoundary>}
       />
       <Route
         path="/templates"
-        element={<Suspense fallback={fallback}><Templates /></Suspense>}
+        element={<ErrorBoundary><Suspense fallback={fallback}><Templates /></Suspense></ErrorBoundary>}
       />
       <Route path="/auth/callback" element={<AuthCallback />} />
     </Routes>

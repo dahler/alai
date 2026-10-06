@@ -61,13 +61,13 @@ export const graphService = {
   async getDocumentGraph(docId: number): Promise<GraphData> {
     const res = await api.get(`/graph/documents/${docId}`)
     return {
-      nodes: (res.data.entities ?? []).map((e: any) => ({
+      nodes: (res.data.entities ?? []).map((e: GraphNode) => ({
         id: e.id,
         name: e.name,
         type: e.type,
         mention_count: e.mention_count,
       })),
-      edges: (res.data.relationships ?? []).map((r: any) => ({
+      edges: (res.data.relationships ?? []).map((r: Omit<GraphEdge, 'confidence'> & { confidence?: number }) => ({
         source_id: r.source_id,
         relation: r.relation,
         target_id: r.target_id,
@@ -85,7 +85,7 @@ export const graphService = {
     const res = await api.get('/graph/entities/search', {
       params: { query, entity_type: entityType || undefined, limit: 40 },
     })
-    return (res.data.results ?? []).map((e: any) => ({
+    return (res.data.results ?? []).map((e: GraphNode) => ({
       id: e.id,
       name: e.name,
       type: e.type,

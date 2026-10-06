@@ -133,6 +133,9 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = (
         "geolocation=(), microphone=(), camera=()"
     )
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; img-src 'self'; frame-ancestors 'none'"
+    )
     if not settings.DEBUG:
         # Only send HSTS over a confirmed HTTPS connection.
         response.headers["Strict-Transport-Security"] = (

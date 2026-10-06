@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class AttachmentBase(BaseModel):
@@ -14,13 +14,12 @@ class AttachmentCreate(AttachmentBase):
 
 
 class AttachmentResponse(AttachmentBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     message_id: int | None = None
     created_at: datetime
     url: str | None = None
-
-    class Config:
-        from_attributes = True
 
 
 class UploadResponse(BaseModel):

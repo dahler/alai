@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.schemas.message import MessageResponse
 
@@ -17,18 +17,14 @@ class ConversationUpdate(BaseModel):
 
 
 class ConversationResponse(ConversationBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     user_id: int | None = None
     anonymous_session_id: str | None = None
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 
 class ConversationWithMessages(ConversationResponse):
     messages: list[MessageResponse] = []
-
-    class Config:
-        from_attributes = True

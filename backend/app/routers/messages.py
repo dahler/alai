@@ -1,3 +1,4 @@
+import logging
 import re as _re
 import time
 import json
@@ -32,6 +33,8 @@ router = APIRouter(
     tags=["messages"],
 )
 
+_logger = logging.getLogger(__name__)
+
 _RAG_INSTRUCTIONS = (
     "Instructions:\n"
     "- LANGUAGE: You MUST reply in the exact same language the user used to "
@@ -60,10 +63,8 @@ _RAG_INSTRUCTIONS = (
 )
 
 
-def log(message: str):
-    """Print log message with timestamp"""
-    timestamp = time.strftime("%H:%M:%S")
-    print(f"[{timestamp}] [CHAT] {message}")
+def log(message: str) -> None:
+    _logger.info("[CHAT] %s", message)
 
 
 # Characters available for input before output starts getting squeezed.

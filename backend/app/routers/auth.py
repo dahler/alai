@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,8 @@ from app.middleware.auth import get_current_user, get_session_id
 from app.models.user import User
 from app.schemas.user import UserResponse
 from app.services.auth import AuthService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -40,15 +44,11 @@ async def callback(
     base = _frontend_url()
 
     if error:
-        print(f"[AUTH] Microsoft OAuth error: {error} — {error_description}")
-        return RedirectResponse(
-            url=f"{base}/auth/callback?error={error}"
-        )
+        logger.warning("Microsoft OAuth error: %s — %s", error, error_description)
+        return RedirectResponse(url=f"{base}/auth/callback?error={error}")
 
     if not code:
-        return RedirectResponse(
-            url=f"{base}/auth/callback?error=missing_code"
-        )
+        return RedirectResponse(url=f"{base}/auth/callback?error=missing_code")
 
     try:
         _, token = await AuthService(db).authenticate_microsoft(
@@ -66,7 +66,7 @@ async def callback(
         )
         return resp
     except Exception as e:
-        print(f"[AUTH] Authentication failed: {e}")
+        logger.exception("Authentication failed: %s", e)
         return RedirectResponse(
             url=f"{base}/auth/callback?error=auth_failed"
         )

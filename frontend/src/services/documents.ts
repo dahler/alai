@@ -107,6 +107,44 @@ export interface DocGraphData {
   edges: DocGraphEdge[]
 }
 
+export interface SearchResultChunk {
+  chunk_text: string
+  filename: string
+  attachment_id: number
+  similarity: number
+  heading_context?: string
+  chunk_index?: number
+  page_start?: number
+  page_end?: number
+  stored_filename?: string
+}
+
+export interface DocumentGraphEntity {
+  id: number
+  name: string
+  type: string
+  mention_count: number
+}
+
+export interface DocumentGraphRelationship {
+  source_id: number
+  target_id: number
+  relation: string
+  confidence?: number
+}
+
+export interface DocumentGraphResponse {
+  entities: DocumentGraphEntity[]
+  relationships: DocumentGraphRelationship[]
+}
+
+export interface RelatedDocument {
+  document_id: number
+  filename: string
+  similarity: number
+  shared_entities: number
+}
+
 export const documentsService = {
   async list(): Promise<DocumentListResponse> {
     const response = await api.get('/documents')
@@ -162,7 +200,7 @@ export const documentsService = {
     return response.data
   },
 
-  async search(query: string, topK = 5): Promise<any> {
+  async search(query: string, topK = 5): Promise<SearchResultChunk[]> {
     const response = await api.get('/documents/search', {
       params: { query, top_k: topK },
     })
@@ -224,12 +262,12 @@ export const documentsService = {
     return response.data
   },
 
-  async getDocumentGraph(documentId: number): Promise<any> {
+  async getDocumentGraph(documentId: number): Promise<DocumentGraphResponse> {
     const response = await api.get(`/graph/documents/${documentId}`)
     return response.data
   },
 
-  async getRelatedDocuments(documentId: number): Promise<any> {
+  async getRelatedDocuments(documentId: number): Promise<RelatedDocument[]> {
     const response = await api.get(`/graph/documents/${documentId}/related`)
     return response.data
   },

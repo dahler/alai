@@ -1,10 +1,13 @@
 import base64
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
 import httpx
 from urllib.parse import urlencode
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,12 +89,12 @@ class AuthService:
             "code_verifier": code_verifier,
         }
 
-        print(f"[AUTH] Token exchange → redirect_uri={settings.MICROSOFT_REDIRECT_URI} verifier_len={len(code_verifier)}", flush=True)
+        logger.info("Token exchange → redirect_uri=%s verifier_len=%d", settings.MICROSOFT_REDIRECT_URI, len(code_verifier))
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(token_url, data=data)
             if not response.is_success:
-                print(f"[AUTH] Token exchange {response.status_code}: {response.text}", flush=True)
+                logger.warning("Token exchange failed %s: %s", response.status_code, response.text)
             response.raise_for_status()
             return response.json()
 
@@ -118,10 +121,7 @@ class AuthService:
         elif state:
             anonymous_session_id = state
 
-        print(f"[AUTH] state raw   : {state!r}", flush=True)
-        print(f"[AUTH] session_id  : {anonymous_session_id!r}", flush=True)
-        print(f"[AUTH] verifier_len: {len(code_verifier)} chars", flush=True)
-        print(f"[AUTH] code        : {code[:20]}...", flush=True)
+        logger.info("state raw=%r session_id=%r verifier_len=%d code=%.20s...", state, anonymous_session_id, len(code_verifier), code)
 
         # Exchange code for Microsoft token (with PKCE verifier)
         token_data = await self.exchange_code_for_token(code, code_verifier)

@@ -31,9 +31,6 @@ aiofiles==23.2.1
 # Document extraction
 pymupdf==1.24.0
 
-# BM25 keyword search for hybrid retrieval
-rank_bm25>=0.2.2
-
 # In-memory TTL cache for RAG search results
 cachetools>=5.3.0
 

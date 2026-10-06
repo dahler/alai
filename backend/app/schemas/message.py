@@ -1,9 +1,11 @@
 from datetime import datetime
 from typing import Any, Literal
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class AttachmentInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     filename: str
     original_filename: str
@@ -11,9 +13,6 @@ class AttachmentInfo(BaseModel):
     file_size: int
     url: str
     is_image: bool
-
-    class Config:
-        from_attributes = True
 
 
 class MessageBase(BaseModel):
@@ -26,6 +25,8 @@ class MessageCreate(MessageBase):
 
 
 class MessageResponse(MessageBase):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     conversation_id: int
     created_at: datetime
@@ -36,9 +37,6 @@ class MessageResponse(MessageBase):
     @classmethod
     def coerce_none(cls, v: Any) -> list:
         return v if v is not None else []
-
-    class Config:
-        from_attributes = True
 
 
 class SendMessageRequest(BaseModel):
