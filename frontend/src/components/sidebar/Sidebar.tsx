@@ -1,3 +1,4 @@
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { NewChatButton } from './NewChatButton'
 import { ConversationItem } from './ConversationItem'
@@ -16,6 +17,11 @@ const NAV_ITEMS = [
     icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10',
   },
   {
+    path: '/graph',
+    label: 'Knowledge Graph',
+    icon: 'M13 10V3L4 14h7v7l9-11h-7z',
+  },
+  {
     path: '/doc-graph',
     label: 'Doc Connections',
     icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4',
@@ -30,6 +36,7 @@ const NAV_ITEMS = [
 export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
+  const [search, setSearch] = useState('')
   const {
     conversations,
     currentConversationId,
@@ -40,10 +47,21 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
   } = useConversationStore()
   const { user, logout } = useAuthStore()
 
-  const handleNewChat = async () => {
+  const handleNewChat = useCallback(async () => {
     const conversation = await createConversation()
     navigate(`/chat/${conversation.id}`)
-  }
+  }, [createConversation, navigate])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault()
+        handleNewChat()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [handleNewChat])
 
   const handleSelectConversation = (id: number) => {
     setCurrentConversation(id)
@@ -105,22 +123,58 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
           <NewChatButton onClick={handleNewChat} />
         </div>
 
+        {/* Search */}
+        {conversations.length > 0 && (
+          <div className="px-3 py-2 border-b border-dark-chat">
+            <div className="relative">
+              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search conversations…"
+                className="w-full bg-dark-bg text-dark-text text-xs pl-7 pr-2 py-1.5 rounded-lg border border-dark-chat focus:outline-none focus:border-dark-hover placeholder-dark-muted"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-muted hover:text-dark-text">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Conversations list */}
         <div className="flex-1 overflow-y-auto p-2">
-          {conversations.length > 0 ? (
-            <div className="space-y-0.5">
-              {conversations.map((conversation) => (
-                <ConversationItem
-                  key={conversation.id}
-                  conversation={conversation}
-                  isActive={conversation.id === currentConversationId}
-                  onClick={() => handleSelectConversation(conversation.id)}
-                  onRename={(title) => handleRename(conversation.id, title)}
-                  onDelete={() => handleDelete(conversation.id)}
-                />
-              ))}
-            </div>
-          ) : (
+          {conversations.length > 0 ? (() => {
+            const filtered = search.trim()
+              ? conversations.filter((c) =>
+                  (c.title || '').toLowerCase().includes(search.toLowerCase())
+                )
+              : conversations
+            return filtered.length > 0 ? (
+              <div className="space-y-0.5">
+                {filtered.map((conversation) => (
+                  <ConversationItem
+                    key={conversation.id}
+                    conversation={conversation}
+                    isActive={conversation.id === currentConversationId}
+                    onClick={() => handleSelectConversation(conversation.id)}
+                    onRename={(title) => handleRename(conversation.id, title)}
+                    onDelete={() => handleDelete(conversation.id)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center text-dark-muted py-8">
+                <p className="text-sm">No results for "{search}"</p>
+              </div>
+            )
+          })() : (
             <div className="text-center text-dark-muted py-10">
               <svg className="w-8 h-8 mx-auto mb-2 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}

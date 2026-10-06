@@ -9,6 +9,7 @@ import { useAuthStore } from './store/authStore'
 import { registerNavigate } from './services/api'
 import { Loading } from './components/common/Loading'
 import { ErrorBoundary } from './components/common/ErrorBoundary'
+import { ToastContainer } from './components/common/ToastContainer'
 
 const Documents = lazy(() =>
   import('./pages/Documents').then(m => ({ default: m.Documents }))
@@ -86,4 +87,13 @@ function App() {
   )
 }
 
-export default App
+function AppWithToast() {
+  return (
+    <>
+      <App />
+      <ToastContainer />
+    </>
+  )
+}
+
+export default AppWithToast

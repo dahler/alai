@@ -172,6 +172,79 @@ function FileDownloadButton({ href, label }: { href: string; label: string }) {
   )
 }
 
+function CopyCodeButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <button
+      onClick={handleCopy}
+      className="flex items-center gap-1.5 text-xs text-dark-muted hover:text-dark-text transition-colors"
+      title="Copy code"
+    >
+      {copied ? (
+        <>
+          <svg className="w-3.5 h-3.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          <span className="text-green-400">Copied!</span>
+        </>
+      ) : (
+        <>
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+          Copy
+        </>
+      )}
+    </button>
+  )
+}
+
+function MessageFeedback({ messageId }: { messageId: number }) {
+  const key = `feedback_${messageId}`
+  const [vote, setVote] = useState<'up' | 'down' | null>(() => {
+    const stored = localStorage.getItem(key)
+    return stored === 'up' || stored === 'down' ? stored : null
+  })
+
+  const handleVote = (v: 'up' | 'down') => {
+    const next = vote === v ? null : v
+    setVote(next)
+    if (next) localStorage.setItem(key, next)
+    else localStorage.removeItem(key)
+  }
+
+  return (
+    <div className="flex items-center gap-1 mt-3">
+      <button
+        onClick={() => handleVote('up')}
+        title="Helpful"
+        className={`p-1 rounded transition-colors ${vote === 'up' ? 'text-green-400' : 'text-dark-muted hover:text-dark-text'}`}
+      >
+        <svg className="w-4 h-4" fill={vote === 'up' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905 0 .714-.211 1.412-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5" />
+        </svg>
+      </button>
+      <button
+        onClick={() => handleVote('down')}
+        title="Not helpful"
+        className={`p-1 rounded transition-colors ${vote === 'down' ? 'text-red-400' : 'text-dark-muted hover:text-dark-text'}`}
+      >
+        <svg className="w-4 h-4" fill={vote === 'down' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018a2 2 0 01.485.06l3.76.94m-7 10v5a2 2 0 002 2h.096c.5 0 .905-.405.905-.905 0-.714.211-1.412.608-2.006L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
 // Inline citation badge — superscript style
 function CiteBadge({ num, onClick, filename }: { num: number; onClick: () => void; filename: string }) {
   return (
@@ -339,17 +412,7 @@ function makeMarkdownComponents(
         <div className="relative group my-4 rounded-xl overflow-hidden border border-dark-chat">
           <div className="flex items-center justify-between px-4 py-2 bg-dark-sidebar border-b border-dark-chat">
             <span className="text-xs text-dark-muted font-mono">{match?.[1] || 'code'}</span>
-            <button
-              onClick={() => navigator.clipboard.writeText(String(children).replace(/\n$/, ''))}
-              className="flex items-center gap-1.5 text-xs text-dark-muted hover:text-dark-text transition-colors"
-              title="Copy code"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-              Copy
-            </button>
+            <CopyCodeButton code={String(children).replace(/\n$/, '')} />
           </div>
           <SyntaxHighlighter
             style={oneLight}
@@ -629,6 +692,11 @@ export function ChatMessage({ message, isStreaming = false, sources = [], proces
                 ))}
               </div>
             </div>
+          )}
+
+          {/* Feedback */}
+          {!isUser && !isStreaming && message.id > 0 && (
+            <MessageFeedback messageId={message.id} />
           )}
         </div>
       </div>

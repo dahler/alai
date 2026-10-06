@@ -16,8 +16,10 @@ interface ChatState {
   error: string | null
   pendingAttachments: UploadResponse[]
   isUploading: boolean
+  _abortController: AbortController | null
   fetchMessages: (conversationId: number) => Promise<void>
   sendMessage: (conversationId: number, content: string) => Promise<void>
+  stopStreaming: () => void
   clearMessages: () => void
   addMessage: (message: Message) => void
   uploadFile: (file: File) => Promise<void>
@@ -37,6 +39,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   pendingAttachments: [],
   isUploading: false,
+  _abortController: null,
 
   fetchMessages: async (conversationId: number) => {
     set({ isLoading: true, error: null })
@@ -60,6 +63,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (error) {
       set({ error: 'Failed to fetch messages', isLoading: false })
     }
+  },
+
+  stopStreaming: () => {
+    const ctrl = get()._abortController
+    if (ctrl) ctrl.abort()
+    set({ isStreaming: false, streamingContent: '', streamingSources: [], streamingProcess: [], _abortController: null })
   },
 
   sendMessage: async (conversationId: number, content: string) => {
@@ -87,6 +96,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       attachments,
     }
 
+    const abortController = new AbortController()
+
     set((state) => ({
       messages: [...state.messages, tempUserMessage],
       isStreaming: true,
@@ -95,6 +106,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingProcess: [],
       error: null,
       pendingAttachments: [],
+      _abortController: abortController,
     }))
 
     let fullContent = ''
@@ -187,8 +199,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       (text: string) => {
         processLines = [...processLines, text]
         set({ streamingProcess: processLines })
-      }
+      },
+      abortController.signal,
     )
+    set({ _abortController: null })
   },
 
   clearMessages: () => {

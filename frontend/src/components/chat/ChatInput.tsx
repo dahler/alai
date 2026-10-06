@@ -3,20 +3,24 @@ import type { UploadResponse } from '../../types/chat'
 
 interface ChatInputProps {
   onSend: (message: string) => void
+  onStop?: () => void
   onFileUpload: (file: File) => Promise<void>
   onRemoveAttachment: (attachmentId: number) => void
   pendingAttachments: UploadResponse[]
   disabled?: boolean
+  isStreaming?: boolean
   isUploading?: boolean
   placeholder?: string
 }
 
 export function ChatInput({
   onSend,
+  onStop,
   onFileUpload,
   onRemoveAttachment,
   pendingAttachments,
   disabled = false,
+  isStreaming = false,
   isUploading = false,
   placeholder = 'Type a message...',
 }: ChatInputProps) {
@@ -200,25 +204,28 @@ export function ChatInput({
             className="flex-1 bg-transparent text-dark-text placeholder-dark-muted py-3 px-2 resize-none focus:outline-none disabled:opacity-50 max-h-[200px]"
           />
 
-          <button
-            onClick={handleSubmit}
-            disabled={disabled || (!message.trim() && pendingAttachments.length === 0)}
-            className="p-3 text-dark-hover hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          {isStreaming ? (
+            <button
+              onClick={onStop}
+              className="p-3 text-red-400 hover:text-red-300 transition-colors"
+              title="Stop generating"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-              />
-            </svg>
-          </button>
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={handleSubmit}
+              disabled={disabled || (!message.trim() && pendingAttachments.length === 0)}
+              className="p-3 text-dark-hover hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+              </svg>
+            </button>
+          )}
         </div>
         <p className="text-xs text-dark-muted text-center mt-2">
           Press Enter to send, Shift+Enter for new line

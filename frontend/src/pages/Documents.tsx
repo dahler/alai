@@ -18,6 +18,7 @@ import {
 } from '../services/documents'
 import { foldersService, Folder } from '../services/folders'
 import { useAuthStore } from '../store/authStore'
+import { toast } from '../store/toastStore'
 
 type TabType = 'personal' | 'company'
 type FolderFilter = number | null | 0  // null=All, 0=Uncategorized
@@ -55,10 +56,10 @@ function getFileIcon(contentType: string) {
 
 const PROCESSING_LABELS: Record<string, string> = {
   uploaded: 'Queued',
-  parsing: 'Parsing…',
+  parsing: 'Analyzing structure…',
   sectioning: 'Extracting sections…',
-  summarizing: 'Summarizing…',
-  embedding: 'Embedding…',
+  summarizing: 'Generating summaries…',
+  embedding: 'Indexing content…',
   done: 'Indexed',
   failed: 'Failed',
 }
@@ -151,6 +152,8 @@ export function Documents() {
 
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteFolderConfirm, setDeleteFolderConfirm] = useState<number | null>(null)
+  const [retryingGraph, setRetryingGraph] = useState<number | null>(null)
 
   const [viewerDoc, setViewerDoc] = useState<Document | null>(null)
   const [viewerChunks, setViewerChunks] = useState<DocumentChunk[]>([])
@@ -292,13 +295,27 @@ export function Documents() {
       await fetchGraphStats()
       setDeleteConfirm(null)
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Failed to delete document')
+      toast.error(err.response?.data?.detail || 'Failed to delete document')
     } finally {
       setIsDeleting(false)
     }
   }
 
   // ── graph ────────────────────────────────────────────────────────────────
+
+  const handleRetryGraph = async (docId: number) => {
+    setRetryingGraph(docId)
+    try {
+      await documentsService.reExtractGraph(docId)
+      setPersonalDocs((prev) => prev.map((d) => d.id === docId ? { ...d, graph_status: 'pending' } : d))
+      setCompanyDocs((prev) => prev.map((d) => d.id === docId ? { ...d, graph_status: 'pending' } : d))
+      toast.info('Graph extraction restarted')
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Failed to re-extract graph')
+    } finally {
+      setRetryingGraph(null)
+    }
+  }
 
   // ── visibility ───────────────────────────────────────────────────────────
 
@@ -308,7 +325,7 @@ export function Documents() {
       await documentsService.changeVisibility(doc.id, !doc.is_company_doc)
       await fetchDocuments()
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Failed to change visibility')
+      toast.error(err.response?.data?.detail || 'Failed to change visibility')
     } finally {
       setChangingVisibility(null)
     }
@@ -325,7 +342,7 @@ export function Documents() {
       setCreatingFolder(false)
       await fetchFolders()
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Failed to create folder')
+      toast.error(err.response?.data?.detail || 'Failed to create folder')
     }
   }
 
@@ -337,18 +354,18 @@ export function Documents() {
       setRenamingFolder(null)
       await fetchFolders()
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Failed to rename folder')
+      toast.error(err.response?.data?.detail || 'Failed to rename folder')
     }
   }
 
   const handleDeleteFolder = async (folderId: number) => {
-    if (!confirm('Delete this folder? Documents inside will be moved to "Uncategorized".')) return
+    setDeleteFolderConfirm(null)
     try {
       await foldersService.delete(folderId)
       if (activeFolder === folderId) setActiveFolder(null)
       await fetchFolders()
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Failed to delete folder')
+      toast.error(err.response?.data?.detail || 'Failed to delete folder')
     }
   }
 
@@ -361,7 +378,7 @@ export function Documents() {
       setCompanyDocs((prev) => update(prev))
       await fetchFolders()
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Failed to move document')
+      toast.error(err.response?.data?.detail || 'Failed to move document')
     } finally {
       setMovingDoc(null)
     }
@@ -646,7 +663,7 @@ export function Documents() {
                       </svg>
                     </button>
                     <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteFolder(folder.id) }}
+                      onClick={(e) => { e.stopPropagation(); setDeleteFolderConfirm(folder.id) }}
                       className="p-1 rounded text-dark-muted hover:text-red-400 hover:bg-dark-chat"
                       title="Delete folder"
                     >
@@ -756,6 +773,28 @@ export function Documents() {
                     )}
                     <ProcessingBadge status={doc.processing_status} />
                     <GraphStatusBadge status={doc.graph_status} />
+
+                    {/* Retry graph extraction */}
+                    {doc.graph_status === 'failed' && (
+                      <button
+                        onClick={() => handleRetryGraph(doc.id)}
+                        disabled={retryingGraph === doc.id}
+                        className="flex items-center gap-1 px-2 py-0.5 text-xs bg-amber-900/30 text-amber-400 hover:text-amber-300 rounded disabled:opacity-50"
+                        title="Retry graph extraction"
+                      >
+                        {retryingGraph === doc.id ? (
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                        )}
+                        Retry
+                      </button>
+                    )}
 
                     {/* Move to folder */}
                     {user && (
@@ -890,6 +929,32 @@ export function Documents() {
                 className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 text-sm"
               >
                 {isDeleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Folder delete confirmation modal ── */}
+      {deleteFolderConfirm !== null && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-dark-sidebar rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            <h3 className="text-lg font-semibold text-dark-text mb-2">Delete Folder?</h3>
+            <p className="text-dark-muted text-sm mb-5">
+              Documents inside will be moved to "Uncategorized".
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteFolderConfirm(null)}
+                className="flex-1 px-4 py-2 bg-dark-chat text-dark-text rounded-lg hover:bg-dark-hover text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDeleteFolder(deleteFolderConfirm)}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+              >
+                Delete
               </button>
             </div>
           </div>
@@ -1041,9 +1106,11 @@ export function Documents() {
                             >
                               {chunk.chunk_text.replace(/<!--.*?-->/gs, '').trim()}
                             </ReactMarkdown>
-                            <p className="text-xs text-dark-muted mt-2">
-                              p. {chunk.page_start === chunk.page_end ? chunk.page_start : `${chunk.page_start}–${chunk.page_end}`}
-                            </p>
+                            <div className="flex items-center gap-2 mt-2 text-xs text-dark-muted">
+                              <span>p.&nbsp;{chunk.page_start === chunk.page_end ? chunk.page_start : `${chunk.page_start}–${chunk.page_end}`}</span>
+                              <span>·</span>
+                              <span className="truncate max-w-[200px]" title={viewerDoc.filename}>{viewerDoc.filename}</span>
+                            </div>
                           </div>
                         </div>
                       )

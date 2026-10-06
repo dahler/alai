@@ -25,11 +25,27 @@ const CAPABILITIES = [
   },
 ]
 
-const EXAMPLE_PROMPTS = [
-  'Siapa yang memberikan approval untuk pembelian di atas 50 juta?',
-  'Buatkan rekap data penjualan dalam format Excel',
-  'Rangkum dokumen yang saya upload ini',
-  'Berapa kurs USD/IDR hari ini?',
+const EXAMPLE_PROMPTS: { id: string; text: string; subtitle: string }[] = [
+  {
+    id: 'approval',
+    text: 'Siapa yang memberikan approval untuk pembelian di atas 50 juta?',
+    subtitle: 'Who approves purchases over 50M IDR?',
+  },
+  {
+    id: 'excel',
+    text: 'Buatkan rekap data penjualan dalam format Excel',
+    subtitle: 'Create a sales summary in Excel format',
+  },
+  {
+    id: 'summarize',
+    text: 'Rangkum dokumen yang saya upload ini',
+    subtitle: 'Summarize the document I uploaded',
+  },
+  {
+    id: 'forex',
+    text: 'Berapa kurs USD/IDR hari ini?',
+    subtitle: "What is today's USD/IDR exchange rate?",
+  },
 ]
 
 export default function Home() {
@@ -37,8 +53,11 @@ export default function Home() {
   const createConversation = useConversationStore((state) => state.createConversation)
   const user = useAuthStore((state) => state.user)
 
-  const handleNewChat = async () => {
+  const handleNewChat = async (starterPrompt?: string) => {
     const conversation = await createConversation()
+    if (starterPrompt) {
+      sessionStorage.setItem('starter_prompt', starterPrompt)
+    }
     navigate(`/chat/${conversation.id}`)
   }
 
@@ -66,18 +85,19 @@ export default function Home() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-8">
           {EXAMPLE_PROMPTS.map((prompt) => (
             <button
-              key={prompt}
-              onClick={handleNewChat}
-              className="text-left px-4 py-3 bg-dark-sidebar hover:bg-dark-chat border border-dark-chat hover:border-dark-hover rounded-lg text-sm text-dark-muted hover:text-dark-text transition-all"
+              key={prompt.id}
+              onClick={() => handleNewChat(prompt.text)}
+              className="text-left px-4 py-3 bg-dark-sidebar hover:bg-dark-chat border border-dark-chat hover:border-dark-hover rounded-lg transition-all"
             >
-              {prompt}
+              <p className="text-sm text-dark-text">{prompt.text}</p>
+              <p className="text-xs text-dark-muted mt-0.5 italic">{prompt.subtitle}</p>
             </button>
           ))}
         </div>
 
         {/* New chat button */}
         <button
-          onClick={handleNewChat}
+          onClick={() => handleNewChat()}
           className="inline-flex items-center gap-2 px-6 py-3 bg-dark-hover hover:bg-opacity-90 rounded-lg font-medium transition-colors text-white mb-10"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

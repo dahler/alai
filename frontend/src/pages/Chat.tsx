@@ -10,7 +10,7 @@ export default function Chat() {
   const setCurrentConversation = useConversationStore(
     (state) => state.setCurrentConversation
   )
-  const clearMessages = useChatStore((state) => state.clearMessages)
+  const { clearMessages, sendMessage } = useChatStore()
 
   useEffect(() => {
     if (!conversationId) {
@@ -26,10 +26,17 @@ export default function Chat() {
 
     setCurrentConversation(id)
 
+    const starter = sessionStorage.getItem('starter_prompt')
+    if (starter) {
+      sessionStorage.removeItem('starter_prompt')
+      // Small delay so ChatWindow has mounted and store is ready
+      setTimeout(() => sendMessage(id, starter), 200)
+    }
+
     return () => {
       clearMessages()
     }
-  }, [conversationId, navigate, setCurrentConversation, clearMessages])
+  }, [conversationId, navigate, setCurrentConversation, clearMessages, sendMessage])
 
   if (!conversationId) {
     return null

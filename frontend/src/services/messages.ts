@@ -31,7 +31,8 @@ export const messagesService = {
     onDone: () => void,
     onError: (error: string) => void,
     onSources?: (sources: Source[]) => void,
-    onProcess?: (text: string) => void
+    onProcess?: (text: string) => void,
+    signal?: AbortSignal
   ): Promise<void> {
     try {
       const response = await fetch(
@@ -41,6 +42,7 @@ export const messagesService = {
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({ content, attachment_ids: attachmentIds }),
+          signal,
         }
       )
 
@@ -115,6 +117,10 @@ export const messagesService = {
 
       onDone()
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        onDone()
+        return
+      }
       onError(error instanceof Error ? error.message : 'Unknown error')
     }
   },

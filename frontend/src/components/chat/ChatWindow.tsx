@@ -24,6 +24,7 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
     isUploading,
     fetchMessages,
     sendMessage,
+    stopStreaming,
     uploadFile,
     removeAttachment,
   } = useChatStore()
@@ -126,10 +127,12 @@ export function ChatWindow({ conversationId }: ChatWindowProps) {
       {/* Input area */}
       <ChatInput
         onSend={handleSend}
+        onStop={stopStreaming}
         onFileUpload={uploadFile}
         onRemoveAttachment={removeAttachment}
         pendingAttachments={pendingAttachments}
         disabled={isStreaming}
+        isStreaming={isStreaming}
         isUploading={isUploading}
         placeholder={isStreaming ? 'Waiting for response...' : 'Type a message...'}
       />
