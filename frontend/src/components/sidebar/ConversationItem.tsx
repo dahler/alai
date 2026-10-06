@@ -18,7 +18,6 @@ export function ConversationItem({
 }: ConversationItemProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editTitle, setEditTitle] = useState(conversation.title)
-  const [showMenu, setShowMenu] = useState(false)
 
   const handleSubmit = () => {
     if (editTitle.trim()) {
@@ -40,25 +39,11 @@ export function ConversationItem({
     <div
       className={`group relative flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
         isActive
-          ? 'bg-dark-chat text-dark-text'
-          : 'text-dark-muted hover:bg-dark-chat hover:text-dark-text'
+          ? 'bg-dark-chat text-dark-text border-l-2 border-[#b45309]'
+          : 'text-dark-muted hover:bg-dark-chat/60 hover:text-dark-text'
       }`}
       onClick={onClick}
     >
-      <svg
-        className="w-4 h-4 flex-shrink-0"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-        />
-      </svg>
-
       {isEditing ? (
         <input
           type="text"
@@ -74,23 +59,17 @@ export function ConversationItem({
         <span className="flex-1 truncate text-sm">{conversation.title}</span>
       )}
 
-      {/* Actions menu */}
-      <div
-        className={`flex items-center gap-1 ${
-          showMenu || isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-        } transition-opacity`}
-      >
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           onClick={(e) => {
             e.stopPropagation()
             setIsEditing(true)
-            setShowMenu(false)
           }}
-          className="p-1 hover:bg-dark-sidebar rounded"
+          className="text-dark-muted hover:text-dark-text transition-colors"
           title="Rename"
         >
           <svg
-            className="w-4 h-4"
+            className="w-3.5 h-3.5"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -106,15 +85,13 @@ export function ConversationItem({
         <button
           onClick={(e) => {
             e.stopPropagation()
-            if (confirm('Delete this conversation?')) {
-              onDelete()
-            }
+            onDelete()
           }}
-          className="p-1 hover:bg-dark-sidebar rounded text-red-400"
+          className="text-dark-muted hover:text-red-400 transition-colors"
           title="Delete"
         >
           <svg
-            className="w-4 h-4"
+            className="w-3.5 h-3.5"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"

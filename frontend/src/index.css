@@ -4,11 +4,11 @@
 
 :root {
   --dark-bg:      #faf8f5;
-  --dark-sidebar: #f0ece6;
-  --dark-chat:    #e8e0d8;
+  --dark-sidebar: #eee8e0;
+  --dark-chat:    #e0d7cc;
   --dark-input:   #faf8f5;
   --dark-hover:   #b45309;
-  --dark-text:    #292524;
+  --dark-text:    #1c1917;
   --dark-muted:   #78716c;
 }
 
@@ -156,4 +156,13 @@ h1, h2, h3, h4, h5, h6 {
 /* Subtle glow on focus */
 input:focus, textarea:focus {
   outline: none;
+}
+
+/* Chat message fade-in */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.msg-enter {
+  animation: msg-in 0.18s ease-out both;
 }

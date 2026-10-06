@@ -14,11 +14,11 @@ export default {
       colors: {
         dark: {
           bg:      '#faf8f5',
-          sidebar: '#f0ece6',
-          chat:    '#e8e0d8',
+          sidebar: '#eee8e0',
+          chat:    '#e0d7cc',
           input:   '#faf8f5',
           hover:   '#b45309',
-          text:    '#292524',
+          text:    '#1c1917',
           muted:   '#78716c',
         },
       },

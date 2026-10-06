@@ -65,10 +65,10 @@ export default function Home() {
 
   return (
     <div className="flex flex-col items-center justify-center h-full text-center p-6 overflow-y-auto">
-      <div className="max-w-2xl w-full py-8">
+      <div className="max-w-xl w-full py-10">
 
         {/* Greeting */}
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-dark-hover to-amber-600 flex items-center justify-center mx-auto mb-5 shadow-lg shadow-dark-hover/20">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-dark-hover to-amber-500 flex items-center justify-center mx-auto mb-6 shadow-glow">
           <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
               d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
@@ -76,21 +76,28 @@ export default function Home() {
           </svg>
         </div>
 
-        <h1 className="text-3xl font-bold mb-1">
+        <h1 className="text-3xl font-bold mb-1 tracking-tight">
           Halo, <span className="text-gradient">{firstName}</span>!
         </h1>
-        <p className="text-dark-muted mb-8">Apa yang bisa ALAI bantu hari ini?</p>
+        <p className="text-dark-muted/80 mb-10 text-sm">Apa yang bisa ALAI bantu hari ini?</p>
 
         {/* Example prompts */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-8 w-full">
           {EXAMPLE_PROMPTS.map((prompt) => (
             <button
               key={prompt.id}
               onClick={() => handleNewChat(prompt.text)}
-              className="text-left px-4 py-3 bg-dark-sidebar hover:bg-dark-chat border border-dark-chat hover:border-dark-hover rounded-lg transition-all"
+              className="text-left px-4 py-3.5 bg-dark-sidebar hover:bg-dark-chat rounded-2xl transition-all group"
             >
-              <p className="text-sm text-dark-text">{prompt.text}</p>
-              <p className="text-xs text-dark-muted mt-0.5 italic">{prompt.subtitle}</p>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-sm text-dark-text leading-snug">{prompt.text}</p>
+                  <p className="text-[11px] text-dark-muted mt-1">{prompt.subtitle}</p>
+                </div>
+                <svg className="w-3.5 h-3.5 text-dark-muted/50 group-hover:text-dark-hover mt-0.5 flex-shrink-0 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
             </button>
           ))}
         </div>
@@ -98,7 +105,7 @@ export default function Home() {
         {/* New chat button */}
         <button
           onClick={() => handleNewChat()}
-          className="inline-flex items-center gap-2 px-6 py-3 bg-dark-hover hover:bg-opacity-90 rounded-lg font-medium transition-colors text-white mb-10"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-dark-hover hover:bg-amber-700 rounded-2xl font-medium transition-colors text-white text-sm mb-12 shadow-glow-sm"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -107,15 +114,17 @@ export default function Home() {
         </button>
 
         {/* Capabilities */}
-        <div className="border-t border-dark-chat pt-8">
-          <p className="text-xs text-dark-muted uppercase tracking-widest mb-4">Yang bisa ALAI lakukan</p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+        <div className="w-full">
+          <p className="text-[10px] font-semibold text-dark-muted/60 uppercase tracking-widest mb-3">Kemampuan ALAI</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left">
             {CAPABILITIES.map(({ icon, title, desc }) => (
-              <div key={title} className="bg-dark-sidebar border border-dark-chat rounded-lg p-4">
-                <div className="flex items-center gap-2.5 mb-1.5">
-                  <svg className="w-4 h-4 text-dark-hover shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon} />
-                  </svg>
+              <div key={title} className="bg-dark-sidebar/80 rounded-2xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-6 h-6 rounded-lg bg-dark-hover/10 flex items-center justify-center flex-shrink-0">
+                    <svg className="w-3.5 h-3.5 text-dark-hover" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon} />
+                    </svg>
+                  </div>
                   <h3 className="text-sm font-semibold text-dark-text">{title}</h3>
                 </div>
                 <p className="text-xs text-dark-muted leading-relaxed">{desc}</p>

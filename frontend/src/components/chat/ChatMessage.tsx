@@ -617,19 +617,16 @@ export function ChatMessage({ message, isStreaming = false, sources = [], proces
   return (
     <>
       {viewing && <DocumentViewerModal source={viewing} onClose={() => setViewing(null)} />}
-      <div className={`flex gap-4 px-6 py-5 ${isUser ? 'bg-dark-bg' : 'bg-dark-sidebar'}`}>
+      <div className={`flex gap-3 px-5 py-4 mx-4 my-1 rounded-2xl msg-enter ${isUser ? '' : 'bg-dark-sidebar/50'}`}>
         {/* Avatar */}
-        <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold text-white ${
-          isUser ? 'bg-stone-400' : 'bg-dark-hover'
+        <div className={`w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold text-white mt-0.5 ${
+          isUser ? 'bg-stone-400/80' : 'bg-dark-hover'
         }`}>
-          {isUser ? 'U' : 'AI'}
+          {isUser ? 'U' : 'A'}
         </div>
 
         {/* Content */}
-        <div className="flex-1 min-w-0 overflow-hidden">
-          <div className="font-medium text-sm mb-2 text-dark-muted">
-            {isUser ? 'You' : 'ALAI'}
-          </div>
+        <div className="flex-1 min-w-0 overflow-hidden pt-0.5">
 
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">

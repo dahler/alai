@@ -75,7 +75,7 @@ export function ChatInput({
   }
 
   return (
-    <div className="border-t border-dark-chat bg-dark-sidebar px-6 py-4">
+    <div className="bg-dark-bg px-4 py-4">
       <div className="max-w-3xl mx-auto">
         {/* Pending attachments preview */}
         {pendingAttachments.length > 0 && (
@@ -140,7 +140,7 @@ export function ChatInput({
         )}
 
         {/* Input area */}
-        <div className="relative flex items-end bg-dark-bg rounded-xl border border-dark-chat focus-within:border-dark-hover transition-colors shadow-sm">
+        <div className="relative flex items-end bg-dark-sidebar rounded-2xl border border-dark-chat/80 focus-within:border-dark-hover/50 focus-within:shadow-glow-sm transition-all shadow-sm">
           {/* File upload button */}
           <input
             ref={fileInputRef}
@@ -227,8 +227,8 @@ export function ChatInput({
             </button>
           )}
         </div>
-        <p className="text-xs text-dark-muted text-center mt-2">
-          Press Enter to send, Shift+Enter for new line
+        <p className="text-[10px] text-dark-muted/60 text-center mt-2">
+          Enter to send · Shift+Enter for new line
         </p>
       </div>
     </div>
