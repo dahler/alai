@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
-import { authService } from '../services/auth'
 import { ReportTemplate, TemplateCreate, templatesService } from '../services/templates'
 import { TemplateEditor } from '../components/templates/TemplateEditor'
 
@@ -16,7 +15,7 @@ const FORMAT_BADGE: Record<string, string> = {
 
 export function Templates() {
   const navigate = useNavigate()
-  const { user } = useAuthStore()
+  const { user, isAuthenticated } = useAuthStore()
   const [tab, setTab] = useState<Tab>('mine')
   const [templates, setTemplates] = useState<ReportTemplate[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,7 +36,7 @@ export function Templates() {
   }
 
   useEffect(() => {
-    if (!authService.isAuthenticated()) {
+    if (!isAuthenticated) {
       navigate('/')
       return
     }
