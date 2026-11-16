@@ -1,7 +1,8 @@
 import logging
 
-from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -70,6 +71,37 @@ async def callback(
         return RedirectResponse(
             url=f"{base}/auth/callback?error=auth_failed"
         )
+
+
+class MsSsoRequest(BaseModel):
+    ms_token: str
+
+
+@router.post("/ms-sso")
+@limiter.limit("20/minute")
+async def ms_sso(
+    request: Request,
+    body: MsSsoRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        _, token = await AuthService(db).login_with_ms_token(body.ms_token)
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(
+            key="auth_token",
+            value=token.access_token,
+            httponly=True,
+            samesite="lax",
+            secure=not settings.DEBUG,
+            max_age=settings.JWT_EXPIRATION_MINUTES * 60,
+            path="/",
+        )
+        return resp
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.exception("SSO login failed: %s", e)
+        raise HTTPException(status_code=500, detail="SSO authentication failed")
 
 
 @router.get("/me", response_model=UserResponse)

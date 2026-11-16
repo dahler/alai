@@ -30,7 +30,21 @@ function App() {
 
   useEffect(() => {
     registerNavigate(navigate)
-    checkAuth()
+
+    const params = new URLSearchParams(window.location.search)
+    const msToken = params.get('ms_token')
+
+    if (msToken) {
+      window.history.replaceState({}, '', window.location.pathname)
+      fetch('/api/auth/ms-sso', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ ms_token: msToken }),
+      }).finally(() => checkAuth())
+    } else {
+      checkAuth()
+    }
   }, [checkAuth, navigate])
 
   // Always allow the OAuth callback to render regardless of auth state

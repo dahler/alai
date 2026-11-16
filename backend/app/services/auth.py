@@ -206,5 +206,35 @@ class AuthService:
             self.db.add(account)
         await self.db.commit()
 
+    async def login_with_ms_token(self, ms_access_token: str) -> tuple[User, Token]:
+        """Create a session from a Microsoft access token issued by a trusted app (SSO handoff)."""
+        user_info = await self.get_microsoft_user_info(ms_access_token)
+
+        email = user_info.mail or user_info.userPrincipalName
+        if not email:
+            raise ValueError("Could not get email from Microsoft account")
+
+        if not email.lower().endswith("@antaraetp.com"):
+            domain = email.split("@")[-1] if "@" in email else "unknown"
+            raise ValueError(
+                f"Access is restricted to @antaraetp.com accounts. '{domain}' is not authorized."
+            )
+
+        user, _ = await self.user_repo.get_or_create_by_email(
+            email=email,
+            name=user_info.displayName,
+        )
+
+        await self._save_oauth_tokens(
+            user_id=user.id,
+            provider_user_id=user_info.id,
+            access_token=ms_access_token,
+            refresh_token=None,
+            expires_in=3600,
+        )
+
+        token = self.create_access_token(user.id)
+        return user, token
+
     async def get_user_by_id(self, user_id: int) -> User | None:
         return await self.user_repo.get_by_id(user_id)
