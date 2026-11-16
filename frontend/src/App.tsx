@@ -32,9 +32,10 @@ function App() {
     registerNavigate(navigate)
 
     const params = new URLSearchParams(window.location.search)
-    const msToken = params.get('ms_token')
+    const msToken = params.get('ms_token') || localStorage.getItem('antara_ms_token')
 
     if (msToken) {
+      localStorage.removeItem('antara_ms_token')
       window.history.replaceState({}, '', window.location.pathname)
       fetch('/api/auth/ms-sso', {
         method: 'POST',
